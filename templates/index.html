@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>InstaGet — Instagram Video & Photo Downloader</title>
+  <meta name="description" content="Download Instagram videos, Reels and photos. Free, fast, no signup required." />
+  <meta property="og:title" content="InstaGet — Instagram Downloader" />
+  <meta property="og:description" content="Download Instagram videos, Reels and photos instantly." />
+  <meta property="og:type" content="website" />
+  <meta name="twitter:card" content="summary" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { font-size: 16px; scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+
+    :root {
+      --bg:        #0a0a0a;
+      --surface:   #111111;
+      --surface2:  #181818;
+      --surface3:  #222222;
+      --border:    #2c2c2c;
+      --border2:   #3c3c3c;
+      --p1:        #833ab4;
+      --p2:        #fd1d1d;
+      --p3:        #fcb045;
+      --success:   #10b981;
+      --danger:    #ef4444;
+      --text:      #f5f5f5;
+      --text2:     #aaaaaa;
+      --muted:     #555555;
+      --radius:    18px;
+      --radius-sm: 12px;
+      --max-w:     680px;
+    }
+
+    body {
+      font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex; flex-direction: column;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image:
+        linear-gradient(rgba(131,58,180,0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(253,29,29,0.018) 1px, transparent 1px);
+      background-size: 44px 44px;
+      pointer-events: none; z-index: 0;
+    }
+
+    body::after {
+      content: '';
+      position: fixed; top: -20%; left: 50%;
+      transform: translateX(-50%);
+      width: 860px; height: 560px;
+      background: radial-gradient(ellipse, rgba(131,58,180,0.11) 0%, transparent 65%);
+      pointer-events: none; z-index: 0;
+    }
+
+    header, main, footer { position: relative; z-index: 1; }
+
+    /* ── Header ── */
+    header {
+      padding: clamp(10px,2vw,18px) 16px 0;
+      text-align: center;
+    }
+
+    .logo {
+      display: inline-flex; align-items: center; gap: 10px;
+      text-decoration: none;
+    }
+
+    .logo-icon {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, var(--p1), var(--p2), var(--p3));
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1rem; color: #fff;
+      box-shadow: 0 4px 16px rgba(131,58,180,0.4);
+      flex-shrink: 0;
+    }
+
+    .logo-text {
+      font-size: clamp(1.1rem,3vw,1.4rem);
+      font-weight: 900; letter-spacing: -0.04em; color: var(--text);
+    }
+
+    .logo-text span {
+      background: linear-gradient(135deg, var(--p1), var(--p2), var(--p3));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+
+    .live-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      margin-top: 6px; padding: 4px 11px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 99px; font-size: 0.72rem; font-weight: 700;
+      color: var(--muted); letter-spacing: 0.03em;
+    }
+
+    .live-badge .dot {
+      width: 6px; height: 6px; background: var(--success);
+      border-radius: 50%; animation: blink 2.4s ease-in-out infinite;
+    }
+
+    @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.25; } }
+
+    /* ── Main ── */
+    main {
+      flex: 1; display: flex; flex-direction: column; align-items: center;
+      padding: clamp(16px,3vw,32px) 16px 24px;
+    }
+
+    .hero { text-align: center; max-width: 600px; width: 100%; }
+
+    h1 {
+      font-size: clamp(1.55rem,4.5vw,2.6rem);
+      font-weight: 900; line-height: 1.14; letter-spacing: -0.04em;
+    }
+
+    h1 .grad {
+      background: linear-gradient(135deg, var(--p1) 0%, var(--p2) 50%, var(--p3) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+
+    .subtitle {
+      margin-top: 8px; color: var(--text2);
+      font-size: clamp(0.82rem,2vw,0.95rem); font-weight: 500; line-height: 1.5;
+    }
+
+    /* ── Converter ── */
+    .converter { margin-top: 20px; width: 100%; max-width: var(--max-w); }
+
+    .input-card {
+      background: var(--surface); border: 1.5px solid var(--border);
+      border-radius: var(--radius); padding: 8px;
+      display: flex; gap: 6px; align-items: center;
+      transition: border-color 0.25s, box-shadow 0.25s;
+    }
+
+    .input-card:focus-within {
+      border-color: var(--p1);
+      box-shadow: 0 0 0 4px rgba(131,58,180,0.1), 0 6px 24px rgba(131,58,180,0.08);
+    }
+
+    .url-input {
+      flex: 1; background: transparent; border: none; outline: none;
+      color: var(--text); font-family: inherit; font-size: 1rem; font-weight: 500;
+      padding: 13px 8px 13px 14px; min-width: 0;
+    }
+
+    .url-input::placeholder { color: var(--muted); font-weight: 400; }
+
+    .btn-clear {
+      flex-shrink: 0; width: 32px; height: 32px; border: none;
+      background: var(--surface2); color: var(--muted); border-radius: 8px;
+      font-size: 0.75rem; cursor: pointer; display: none;
+      align-items: center; justify-content: center;
+      transition: color 0.2s, background 0.2s;
+    }
+    .btn-clear:hover { color: var(--text); background: var(--border); }
+
+    .btn-paste {
+      flex-shrink: 0; padding: 10px 16px;
+      border: 1.5px solid var(--border2); border-radius: var(--radius-sm);
+      background: var(--surface2); color: var(--text2);
+      font-family: inherit; font-size: 0.85rem; font-weight: 700;
+      cursor: pointer; white-space: nowrap; min-height: 46px;
+      transition: border-color 0.2s, color 0.2s, background 0.2s;
+    }
+    .btn-paste:hover { border-color: var(--p1); color: var(--text); background: var(--surface3); }
+
+    .btn-primary {
+      flex-shrink: 0; padding: 13px 22px; border: none;
+      border-radius: var(--radius-sm);
+      background: linear-gradient(135deg, var(--p1), var(--p2));
+      color: #fff; font-family: inherit;
+      font-size: clamp(0.88rem,2.2vw,1rem); font-weight: 800;
+      cursor: pointer; white-space: nowrap; min-height: 50px;
+      box-shadow: 0 4px 18px rgba(131,58,180,0.38);
+      transition: opacity 0.2s, transform 0.15s, box-shadow 0.2s;
+    }
+    .btn-primary:hover { opacity: 0.9; box-shadow: 0 6px 24px rgba(131,58,180,0.52); }
+    .btn-primary:active { transform: scale(0.98); }
+    .btn-primary:disabled { opacity: 0.38; cursor: not-allowed; box-shadow: none; }
+
+    /* ── Format selector ── */
+    .quality-label {
+      margin-top: 10px; margin-bottom: 6px;
+      font-size: 0.68rem; font-weight: 800; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.1em; padding: 0 2px;
+    }
+
+    .quality-selector { display: grid; grid-template-columns: repeat(2,1fr); gap: 6px; }
+
+    .q-btn {
+      padding: 11px 6px 10px; border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm); background: var(--surface); color: var(--muted);
+      font-family: inherit; cursor: pointer;
+      display: flex; flex-direction: column; align-items: center; gap: 3px;
+      transition: border-color 0.2s, color 0.2s, background 0.2s, transform 0.15s;
+    }
+    .q-btn:hover { border-color: var(--p1); color: var(--text); transform: translateY(-1px); }
+
+    .q-title { font-size: 0.85rem; font-weight: 800; line-height: 1.2; }
+    .q-sub   { font-size: 0.65rem; font-weight: 600; opacity: 0.75; }
+
+    .q-btn.active {
+      border-color: var(--p1);
+      background: rgba(131,58,180,0.13);
+      box-shadow: 0 0 0 1.5px var(--p1), 0 4px 14px rgba(131,58,180,0.2);
+      color: var(--text);
+    }
+    .q-btn.active .q-title, .q-btn.active .q-sub { color: #c77dff; }
+
+    .q-btn.audio-btn.active {
+      border-color: var(--p3);
+      background: rgba(252,176,69,0.1);
+      box-shadow: 0 0 0 1.5px var(--p3), 0 4px 14px rgba(252,176,69,0.18);
+    }
+    .q-btn.audio-btn.active .q-title,
+    .q-btn.audio-btn.active .q-sub { color: var(--p3); }
+
+    /* ── Error ── */
+    .error-wrap {
+      margin-top: 10px; background: rgba(239,68,68,0.07);
+      border: 1px solid rgba(239,68,68,0.22); border-radius: var(--radius-sm);
+      padding: 12px 14px; display: none;
+      align-items: center; justify-content: space-between; gap: 10px;
+    }
+    .error-msg { color: var(--danger); font-size: 0.85rem; font-weight: 600; flex: 1; }
+    .btn-retry {
+      flex-shrink: 0; padding: 7px 14px;
+      border: 1.5px solid var(--danger); border-radius: 8px;
+      background: transparent; color: var(--danger);
+      font-family: inherit; font-size: 0.78rem; font-weight: 700;
+      cursor: pointer; transition: background 0.2s, color 0.2s;
+    }
+    .btn-retry:hover { background: var(--danger); color: #fff; }
+
+    /* ── Result card ── */
+    .video-card {
+      margin-top: 12px; background: var(--surface); border: 1.5px solid var(--border2);
+      border-radius: var(--radius); overflow: hidden; display: none;
+      animation: fadeUp 0.35s cubic-bezier(0.16,1,0.3,1);
+      box-shadow: 0 10px 36px rgba(0,0,0,0.45), 0 0 0 1px rgba(131,58,180,0.07);
+    }
+
+    @keyframes fadeUp {
+      from { opacity:0; transform:translateY(14px); }
+      to   { opacity:1; transform:translateY(0); }
+    }
+
+    .video-card-inner { display: flex; align-items: center; gap: 12px; padding: 12px; }
+
+    .video-thumb {
+      flex-shrink: 0; width: 72px; height: 72px;
+      border-radius: 8px; object-fit: cover; background: var(--surface2);
+    }
+
+    .video-meta { flex: 1; min-width: 0; }
+
+    .video-title {
+      font-size: 0.92rem; font-weight: 700; line-height: 1.38;
+      overflow: hidden; display: -webkit-box;
+      -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    }
+
+    .video-sub { margin-top: 4px; font-size: 0.76rem; font-weight: 500; color: var(--muted); }
+
+    .video-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+
+    .quality-badge {
+      padding: 3px 9px; border-radius: 6px;
+      background: rgba(131,58,180,0.15); border: 1px solid rgba(131,58,180,0.28);
+      color: #c77dff; font-size: 0.68rem; font-weight: 800; letter-spacing: 0.04em;
+    }
+
+    .card-actions { padding: 0 12px 12px; }
+
+    .progress-wrap {
+      height: 4px; background: var(--surface2); border-radius: 99px;
+      overflow: hidden; margin-bottom: 8px; display: none;
+    }
+
+    .progress-bar {
+      height: 100%; border-radius: 99px; width: 0%;
+      background: linear-gradient(90deg, var(--p1), var(--p2), var(--p3), var(--p1));
+      background-size: 300% 100%; transition: width 0.5s ease;
+      animation: flow 3s linear infinite;
+    }
+
+    @keyframes flow { 0% { background-position:100% 0; } 100% { background-position:-100% 0; } }
+
+    .status-text { font-size: 0.82rem; font-weight: 600; color: var(--muted); margin-bottom: 8px; display: none; }
+
+    @keyframes pulse-glow {
+      0%,100% { box-shadow: 0 0 0 0 rgba(16,185,129,0.5), 0 5px 18px rgba(16,185,129,0.28); }
+      50%      { box-shadow: 0 0 0 12px rgba(16,185,129,0), 0 5px 18px rgba(16,185,129,0.14); }
+    }
+
+    .btn-download {
+      width: 100%; padding: 14px 14px; border: none; border-radius: var(--radius-sm);
+      background: linear-gradient(135deg, var(--success), #059669); color: #fff;
+      font-family: inherit; font-size: clamp(0.95rem,2.5vw,1.05rem); font-weight: 800;
+      cursor: pointer; display: none; align-items: center; justify-content: center;
+      gap: 10px; text-decoration: none; min-height: 50px;
+      box-shadow: 0 4px 18px rgba(16,185,129,0.28); transition: opacity 0.2s;
+    }
+    .btn-download:hover { opacity: 0.92; }
+    .btn-download.pulse { animation: pulse-glow 1.8s ease-in-out infinite; }
+    .btn-download svg { width: 20px; height: 20px; flex-shrink: 0; }
+
+    .btn-row { display: flex; gap: 6px; margin-top: 7px; }
+
+    .btn-copy-link {
+      flex: 1; padding: 10px; border: 1.5px solid var(--border2);
+      border-radius: var(--radius-sm); background: var(--surface2); color: var(--text2);
+      font-family: inherit; font-size: 0.82rem; font-weight: 700; cursor: pointer;
+      display: none; align-items: center; justify-content: center; gap: 6px; min-height: 42px;
+      transition: border-color 0.2s, color 0.2s;
+    }
+    .btn-copy-link:hover { border-color: var(--p1); color: var(--text); }
+    .btn-copy-link.copied { color: var(--success); border-color: var(--success); }
+
+    .btn-share {
+      flex-shrink: 0; padding: 10px 14px; border: 1.5px solid var(--border2);
+      border-radius: var(--radius-sm); background: var(--surface2); color: var(--text2);
+      font-family: inherit; font-size: 0.82rem; font-weight: 700; cursor: pointer;
+      display: none; align-items: center; justify-content: center; gap: 6px; min-height: 42px;
+      transition: border-color 0.2s, color 0.2s;
+    }
+    .btn-share:hover { border-color: var(--p2); color: var(--text); }
+
+    .btn-reset {
+      width: 100%; padding: 10px; border: 1.5px dashed var(--border);
+      border-radius: var(--radius-sm); background: transparent; color: var(--muted);
+      font-family: inherit; font-size: 0.82rem; font-weight: 700;
+      cursor: pointer; min-height: 42px; display: none; margin-top: 7px;
+      transition: border-color 0.2s, color 0.2s;
+    }
+    .btn-reset:hover { border-color: var(--p1); color: var(--text); }
+
+    /* ── Footer ── */
+    footer {
+      padding: 14px 16px; border-top: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: center;
+      gap: 12px; flex-wrap: wrap;
+    }
+
+    .footer-brand { font-size: 0.9rem; font-weight: 900; letter-spacing: -0.03em; color: var(--text); }
+    .footer-brand span {
+      background: linear-gradient(135deg, var(--p1), var(--p2), var(--p3));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+
+    .footer-divider { color: var(--border2); }
+    .footer-copy { font-size: 0.73rem; color: var(--muted); font-weight: 500; }
+
+    .footer-handle {
+      font-size: 0.84rem; font-weight: 800;
+      background: linear-gradient(135deg, var(--p1), var(--p2));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      text-decoration: none; transition: opacity 0.2s;
+    }
+    .footer-handle:hover { opacity: 0.72; }
+
+    /* ── Responsive ── */
+    @media (min-width: 640px) { .converter { max-width: var(--max-w); } }
+
+    @media (max-width: 639px) {
+      main { padding: 12px 12px 16px; }
+      header { padding: 10px 12px 0; }
+      .logo-icon { width: 30px; height: 30px; font-size: 0.9rem; }
+      .converter { margin-top: 14px; }
+      .input-card { padding: 6px; gap: 5px; }
+      .url-input  { padding: 11px 6px 11px 10px; font-size: 0.92rem; }
+      .btn-paste  { padding: 9px 12px; font-size: 0.78rem; min-height: 42px; }
+      .btn-primary{ padding: 11px 14px; min-height: 42px; font-size: 0.88rem; }
+      .q-btn      { padding: 9px 4px 8px; }
+      footer { gap: 8px; padding: 10px 12px; }
+      .footer-copy { display: none; }
+    }
+
+    @media (max-width: 380px) {
+      .btn-paste { display: none; }
+      .btn-primary { flex: 1; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <a class="logo" href="/">
+    <div class="logo-icon">📷</div>
+    <span class="logo-text">Insta<span>Get</span></span>
+  </a>
+  <div>
+    <span class="live-badge"><span class="dot"></span> Free &amp; No Signup Required</span>
+  </div>
+</header>
+
+<main>
+  <div class="hero">
+    <h1>Download Instagram<br/><span class="grad">Videos &amp; Reels</span></h1>
+    <p class="subtitle">Paste any Instagram link — download video or extract audio instantly</p>
+  </div>
+
+  <div class="converter">
+
+    <div class="input-card">
+      <input type="url" class="url-input" id="urlInput"
+        placeholder="Paste an Instagram link here…"
+        autocomplete="off" autocorrect="off" autocapitalize="off"
+        spellcheck="false" inputmode="url" />
+      <button class="btn-clear" id="btnClear" onclick="clearInput()" title="Clear">✕</button>
+      <button class="btn-paste" id="btnPaste" onclick="pasteUrl()">Paste</button>
+      <button class="btn-primary" id="btnConvert" onclick="handleConvert()">Download</button>
+    </div>
+
+    <p class="quality-label">Format</p>
+    <div class="quality-selector">
+      <button class="q-btn active" data-fmt="mp4" onclick="selectQuality(this)">
+        <span class="q-title">MP4 ★</span>
+        <span class="q-sub">Video HD</span>
+      </button>
+      <button class="q-btn audio-btn" data-fmt="mp3" onclick="selectQuality(this)">
+        <span class="q-title">MP3</span>
+        <span class="q-sub">Audio Only</span>
+      </button>
+    </div>
+
+    <div class="error-wrap" id="errorWrap">
+      <span class="error-msg" id="errorMsg"></span>
+      <button class="btn-retry" onclick="handleConvert()">Try again</button>
+    </div>
+
+    <div class="video-card" id="videoCard">
+      <div class="video-card-inner">
+        <img class="video-thumb" id="videoThumb" src="" alt="" />
+        <div class="video-meta">
+          <div class="video-title" id="videoTitle"></div>
+          <div class="video-sub"   id="videoSub"></div>
+          <div class="video-badges">
+            <span class="quality-badge" id="qualityBadge">HD MP4</span>
+          </div>
+        </div>
+      </div>
+      <div class="card-actions">
+        <p class="status-text" id="statusText"></p>
+        <div class="progress-wrap" id="progressWrap">
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
+        <a class="btn-download" id="btnDownload" href="#">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Download
+        </a>
+        <div class="btn-row">
+          <button class="btn-copy-link" id="btnCopyLink" onclick="copyDownloadLink()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px">
+              <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+            Copy link
+          </button>
+          <button class="btn-share" id="btnShare" onclick="shareDownload()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px">
+              <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+              <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+            </svg>
+            Share
+          </button>
+        </div>
+        <button class="btn-reset" id="btnReset" onclick="resetForm()">↩ Download another</button>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<footer>
+  <span class="footer-brand">📷 Insta<span>Get</span></span>
+  <span class="footer-divider">·</span>
+  <span class="footer-copy">For personal use only. Respect copyright laws.</span>
+  <span class="footer-divider">·</span>
+  <a class="footer-handle" href="https://twitter.com/KhaledQ84Ever" target="_blank">@KhaledQ84Ever</a>
+</footer>
+
+<script>
+  let pollTimer = null;
+  let currentDownloadUrl = null;
+  let selectedFmt = localStorage.getItem('ig_fmt') || 'mp4';
+
+  const $ = id => document.getElementById(id);
+
+  (function restoreQuality() {
+    const btn = document.querySelector(`.q-btn[data-fmt="${selectedFmt}"]`);
+    if (btn) {
+      document.querySelectorAll('.q-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    }
+  })();
+
+  function selectQuality(btn) {
+    document.querySelectorAll('.q-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    selectedFmt = btn.dataset.fmt;
+    localStorage.setItem('ig_fmt', selectedFmt);
+  }
+
+  async function pasteUrl() {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        $('urlInput').value = text;
+        updateClearBtn();
+        if (text.includes('instagram.com')) handleConvert();
+      }
+    } catch { $('urlInput').focus(); }
+  }
+
+  function clearInput() { $('urlInput').value = ''; $('btnClear').style.display = 'none'; $('urlInput').focus(); }
+  function updateClearBtn() { $('btnClear').style.display = $('urlInput').value ? 'flex' : 'none'; }
+  function showError(msg) { $('errorMsg').textContent = msg; $('errorWrap').style.display = 'flex'; }
+  function hideError() { $('errorWrap').style.display = 'none'; }
+
+  function setConverting(on) {
+    $('btnConvert').disabled = on;
+    $('btnConvert').textContent = on ? 'Loading…' : 'Download';
+    $('urlInput').disabled = on;
+  }
+
+  async function handleConvert() {
+    clearInterval(pollTimer);
+    const url = $('urlInput').value.trim();
+    if (!url) { showError('Please paste an Instagram URL'); return; }
+
+    hideError();
+    ['videoCard','btnDownload','btnCopyLink','btnShare','btnReset','progressWrap','statusText']
+      .forEach(id => { const el = $(id); if (el) el.style.display = 'none'; });
+    currentDownloadUrl = null;
+    setConverting(true);
+
+    try {
+      $('statusText').textContent   = 'Fetching post info…';
+      $('statusText').style.display = 'block';
+
+      const infoRes = await fetch('/info', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      const info = await infoRes.json();
+      $('statusText').style.display = 'none';
+
+      if (!infoRes.ok) { showError(info.error || 'Could not fetch post info'); setConverting(false); return; }
+
+      $('videoThumb').src         = info.thumbnail;
+      $('videoTitle').textContent = info.title || 'Instagram Post';
+      $('videoSub').textContent   = `@${info.uploader}${info.duration !== '—' ? '  ·  ' + info.duration : ''}`;
+      $('qualityBadge').textContent = selectedFmt === 'mp3' ? 'MP3 Audio' : 'HD MP4';
+      $('videoCard').style.display  = 'block';
+
+      const startRes = await fetch('/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: info.url || url, title: info.title, format: selectedFmt })
+      });
+      const startData = await startRes.json();
+      if (!startRes.ok) { showError(startData.error || 'Failed to start download'); setConverting(false); return; }
+
+      pollJob(startData.job_id);
+    } catch {
+      $('statusText').style.display = 'none';
+      showError('Network error. Please try again.');
+      setConverting(false);
+    }
+  }
+
+  const STATUS_MSGS = ['Downloading…', 'Processing…', 'Almost done…'];
+
+  function pollJob(jobId) {
+    $('progressWrap').style.display = 'block';
+    $('statusText').style.display   = 'block';
+    $('statusText').textContent     = 'Starting…';
+
+    let fake = 3, msgIdx = 0;
+    $('progressBar').style.width = fake + '%';
+
+    const grow = setInterval(() => {
+      if (fake < 28) { fake += Math.random() * 3; $('progressBar').style.width = fake + '%'; }
+    }, 1500);
+
+    const msgCycle = setInterval(() => {
+      if ($('statusText').textContent.startsWith('Download')) return;
+      msgIdx = (msgIdx + 1) % STATUS_MSGS.length;
+      $('statusText').textContent = STATUS_MSGS[msgIdx];
+    }, 4000);
+
+    let attempts = 0;
+    pollTimer = setInterval(async () => {
+      if (++attempts > 150) {
+        clearInterval(pollTimer); clearInterval(grow); clearInterval(msgCycle);
+        showError('Timed out. Please try again.'); setConverting(false); return;
+      }
+      try {
+        const res  = await fetch(`/status/${jobId}`);
+        const data = await res.json();
+
+        if (data.progress != null && data.progress > fake) {
+          clearInterval(grow); fake = data.progress;
+          $('progressBar').style.width = fake + '%';
+          if (data.progress < 95) $('statusText').textContent = `Downloading… ${data.progress}%`;
+        }
+
+        if (data.status === 'done') {
+          clearInterval(pollTimer); clearInterval(grow); clearInterval(msgCycle);
+          $('progressBar').style.width = '100%';
+          $('statusText').textContent  = '✓ Done!';
+
+          setTimeout(() => {
+            $('progressWrap').style.display = 'none';
+            $('statusText').style.display   = 'none';
+
+            const dlUrl = `/download/${jobId}`;
+            currentDownloadUrl = dlUrl;
+
+            const tmp = document.createElement('a');
+            tmp.href = dlUrl; tmp.download = data.filename || 'instagram.mp4';
+            document.body.appendChild(tmp); tmp.click(); document.body.removeChild(tmp);
+
+            const dl = $('btnDownload');
+            dl.href = dlUrl; dl.download = data.filename || 'instagram.mp4';
+            dl.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> ${selectedFmt === 'mp3' ? 'Download MP3' : 'Download MP4'}`;
+            dl.style.display = 'flex';
+            dl.classList.add('pulse');
+            setTimeout(() => dl.classList.remove('pulse'), 7000);
+
+            $('btnCopyLink').style.display = 'flex';
+            if (navigator.share) $('btnShare').style.display = 'flex';
+            $('btnReset').style.display = 'block';
+            setConverting(false);
+          }, 400);
+
+        } else if (data.status === 'error') {
+          clearInterval(pollTimer); clearInterval(grow); clearInterval(msgCycle);
+          $('progressWrap').style.display = 'none';
+          $('statusText').style.display   = 'none';
+          showError(data.error || 'Download failed. Please try again.');
+          setConverting(false);
+        }
+      } catch {}
+    }, 2000);
+  }
+
+  async function copyDownloadLink() {
+    if (!currentDownloadUrl) return;
+    const full = location.origin + currentDownloadUrl;
+    try {
+      await navigator.clipboard.writeText(full);
+      $('btnCopyLink').textContent = '✓ Copied!';
+      $('btnCopyLink').classList.add('copied');
+      setTimeout(() => {
+        $('btnCopyLink').innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy link`;
+        $('btnCopyLink').classList.remove('copied');
+      }, 2000);
+    } catch { prompt('Copy this link:', full); }
+  }
+
+  async function shareDownload() {
+    if (!navigator.share || !currentDownloadUrl) return;
+    try { await navigator.share({ title: $('videoTitle').textContent || 'Instagram', url: location.origin + currentDownloadUrl }); } catch {}
+  }
+
+  function resetForm() {
+    clearInterval(pollTimer);
+    $('urlInput').value = ''; updateClearBtn();
+    ['videoCard','btnDownload','btnCopyLink','btnShare','btnReset','errorWrap','progressWrap','statusText']
+      .forEach(id => { const el = $(id); if (el) el.style.display = 'none'; });
+    currentDownloadUrl = null; setConverting(false); $('urlInput').focus();
+  }
+
+  $('urlInput').addEventListener('input',   updateClearBtn);
+  $('urlInput').addEventListener('keydown', e => { if (e.key === 'Enter') handleConvert(); });
+  $('urlInput').addEventListener('focus',   async () => {
+    if ($('urlInput').value) return;
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text && text.includes('instagram.com')) { $('urlInput').value = text; updateClearBtn(); }
+    } catch {}
+  });
+</script>
+</body>
+</html>
