@@ -3,4 +3,3 @@ flask-cors
 gunicorn
 static-ffmpeg
 requests
-instaloader

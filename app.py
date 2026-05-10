@@ -10,8 +10,6 @@ try:
 except Exception:
     pass
 
-import instaloader
-
 app = Flask(__name__)
 CORS(app)
 
@@ -26,9 +24,14 @@ jobs_lock   = threading.Lock()
 _rate_store = defaultdict(list)
 _rate_lock  = threading.Lock()
 
-_DL_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
-    'Referer':    'https://www.instagram.com/',
+_MOBILE_UA = ('Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) '
+              'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1')
+_HEADERS = {
+    'User-Agent':      _MOBILE_UA,
+    'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection':      'keep-alive',
 }
 
 
@@ -104,43 +107,83 @@ def _find_ffmpeg():
     nix = glob.glob('/nix/store/*/bin/ffmpeg')
     return nix[0] if nix else None
 
-def _make_loader():
-    return instaloader.Instaloader(
-        download_pictures=False, download_videos=False,
-        download_video_thumbnails=False, download_geotags=False,
-        download_comments=False, save_metadata=False,
-        compress_json=False, quiet=True)
 
+# ── Instagram scraper ─────────────────────────────────────────────────────────
 
-# ── instaloader helpers ───────────────────────────────────────────────────────
+def ig_scrape(shortcode):
+    """
+    Fetch post data from Instagram's public embed + JSON endpoints.
+    Works for public posts without any login.
+    """
+    session = req_lib.Session()
+    session.headers.update(_HEADERS)
 
-def ig_get_post(shortcode):
-    L = _make_loader()
+    # 1. Hit main page first to get cookies
     try:
-        post = instaloader.Post.from_shortcode(L.context, shortcode)
-        return post, None
-    except instaloader.exceptions.LoginRequiredException:
-        return None, 'This post is private. Only public posts can be downloaded.'
+        session.get('https://www.instagram.com/', timeout=10)
     except Exception:
-        return None, 'Post not found or unavailable. Make sure it is public.'
+        pass
 
-def ig_post_info(post):
-    caption   = (post.caption or '')[:120].replace('\n', ' ')
-    title     = caption if caption else 'Instagram Post'
-    thumbnail = post.url
-    uploader  = post.owner_username
-    duration  = 0
-    if post.is_video:
-        duration = post.video_duration or 0
-    m, s = divmod(int(duration), 60)
-    return {
-        'title':        title,
-        'thumbnail':    thumbnail,
-        'uploader':     uploader,
-        'is_video':     post.is_video,
-        'duration':     f'{m}:{s:02d}' if duration else '—',
-        'duration_sec': int(duration),
-    }
+    # 2. Try embed page to get video/image URL
+    embed_url = f'https://www.instagram.com/p/{shortcode}/embed/captioned/'
+    try:
+        r = session.get(embed_url, timeout=15)
+        html = r.text
+
+        # Extract video URL
+        video_url = None
+        for pattern in [
+            r'"video_url"\s*:\s*"([^"]+)"',
+            r'<video[^>]+src="([^"]+)"',
+            r'src="(https://[^"]+\.mp4[^"]*)"',
+        ]:
+            m = re.search(pattern, html)
+            if m:
+                video_url = m.group(1).replace('\\u0026', '&').replace('\/', '/')
+                break
+
+        # Extract thumbnail
+        thumb_url = ''
+        for pattern in [
+            r'"display_url"\s*:\s*"([^"]+)"',
+            r'<img[^>]+src="(https://[^"]+(?:jpg|jpeg|png|webp)[^"]*)"',
+        ]:
+            m = re.search(pattern, html)
+            if m:
+                thumb_url = m.group(1).replace('\\u0026', '&').replace('\/', '/')
+                break
+
+        # Extract title/caption
+        title = 'Instagram Post'
+        for pattern in [
+            r'<title>([^<]+)</title>',
+            r'"text"\s*:\s*"([^"]{10,200})"',
+        ]:
+            m = re.search(pattern, html)
+            if m:
+                t = m.group(1).strip()
+                if t and 'Instagram' not in t[:10]:
+                    title = t[:150]
+                    break
+
+        # Extract username
+        uploader = ''
+        m = re.search(r'"username"\s*:\s*"([^"]+)"', html)
+        if m:
+            uploader = m.group(1)
+
+        is_video = video_url is not None
+
+        return {
+            'video_url': video_url,
+            'thumb_url': thumb_url,
+            'title':     title,
+            'uploader':  uploader,
+            'is_video':  is_video,
+        }, None
+
+    except Exception as e:
+        return None, 'Could not fetch post. Make sure it is a public post.'
 
 
 # ── Worker ────────────────────────────────────────────────────────────────────
@@ -163,7 +206,8 @@ def schedule_cleanup(job_id, path):
     threading.Thread(target=_cleanup, daemon=True).start()
 
 def download_stream(src_url, output_path, job_id):
-    r = req_lib.get(src_url, stream=True, timeout=120, headers=_DL_HEADERS)
+    r = req_lib.get(src_url, stream=True, timeout=120,
+                    headers={**_HEADERS, 'Referer': 'https://www.instagram.com/'})
     r.raise_for_status()
     total = int(r.headers.get('content-length', 0))
     done  = 0
@@ -181,27 +225,22 @@ def download_stream(src_url, output_path, job_id):
 def do_download(job_id, shortcode, title, fmt):
     _set_job(job_id, {'status': 'processing', 'progress': 5})
     try:
-        post, err = ig_get_post(shortcode)
-        if err or not post:
+        data, err = ig_scrape(shortcode)
+        if err or not data:
             _set_job(job_id, {'status': 'error', 'error': err or 'Could not fetch post.'}); return
 
-        if fmt == 'mp3' or post.is_video:
-            src_url = post.video_url
-        else:
-            src_url = post.url  # image/thumbnail
-
+        src_url = data['video_url'] if data['is_video'] else data['thumb_url']
         if not src_url:
-            _set_job(job_id, {'status': 'error', 'error': 'No media URL found.'}); return
+            _set_job(job_id, {'status': 'error', 'error': 'No media URL found in this post.'}); return
 
         file_id  = str(uuid.uuid4())
-        tmp_ext  = 'mp4' if post.is_video else 'jpg'
+        tmp_ext  = 'mp4' if data['is_video'] else 'jpg'
         tmp_path = os.path.join(DOWNLOAD_DIR, f'{file_id}.{tmp_ext}')
 
         download_stream(src_url, tmp_path, job_id)
         _set_job(job_id, {'progress': 92})
 
-        # Extract MP3 if requested
-        if fmt == 'mp3' and post.is_video:
+        if fmt == 'mp3' and data['is_video']:
             mp3_path = os.path.join(DOWNLOAD_DIR, f'{file_id}.mp3')
             ffmpeg = _find_ffmpeg()
             if ffmpeg:
@@ -210,8 +249,9 @@ def do_download(job_id, shortcode, title, fmt):
                 if os.path.exists(mp3_path):
                     os.remove(tmp_path); tmp_path = mp3_path
 
-        out_ext  = 'mp3' if (fmt == 'mp3' and post.is_video) else tmp_ext
-        filename = make_filename(title or f'@{post.owner_username}', out_ext)
+        t   = title or data.get('title') or f'instagram_{shortcode}'
+        ext = 'mp3' if (fmt == 'mp3' and data['is_video']) else tmp_ext
+        filename = make_filename(t, ext)
         _set_job(job_id, {'status': 'done', 'file': tmp_path,
                            'filename': filename, 'progress': 100})
         schedule_cleanup(job_id, tmp_path)
@@ -273,12 +313,18 @@ def get_info():
     sc = extract_shortcode(url)
     if not sc:
         return jsonify({'error': 'Could not parse Instagram URL.'}), 400
-    post, err = ig_get_post(sc)
+    post, err = ig_scrape(sc)
     if err or not post:
         return jsonify({'error': err or 'Could not fetch post.'}), 400
-    info = ig_post_info(post)
-    info['url'] = url
-    return jsonify(info)
+    return jsonify({
+        'title':        post['title'],
+        'thumbnail':    post['thumb_url'],
+        'uploader':     post['uploader'],
+        'is_video':     post['is_video'],
+        'duration':     '—',
+        'duration_sec': 0,
+        'url':          url,
+    })
 
 @app.route('/start', methods=['POST'])
 def start_convert():
