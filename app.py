@@ -10,6 +10,8 @@ try:
 except Exception:
     pass
 
+import instaloader
+
 app = Flask(__name__)
 CORS(app)
 
@@ -24,11 +26,9 @@ jobs_lock   = threading.Lock()
 _rate_store = defaultdict(list)
 _rate_lock  = threading.Lock()
 
-COBALT      = 'https://api.cobalt.tools/'
-COBALT_HDR  = {
-    'Accept':       'application/json',
-    'Content-Type': 'application/json',
-    'User-Agent':   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+_DL_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+    'Referer':    'https://www.instagram.com/',
 }
 
 
@@ -73,23 +73,25 @@ _load_all_jobs()
 # ── URL helpers ───────────────────────────────────────────────────────────────
 
 _IG_RE = re.compile(
-    r'(?:https?://)?(?:www\.)?instagram\.com/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)',
+    r'instagram\.com/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)',
     re.IGNORECASE)
 
 def is_valid_url(url):
     return bool(_IG_RE.search(url))
 
+def extract_shortcode(url):
+    m = _IG_RE.search(url)
+    return m.group(1) if m else None
+
 def normalize_url(url):
     url = url.strip()
     if not url.startswith('http'):
         url = 'https://' + url
-    m = _IG_RE.search(url)
-    if m:
-        return f'https://www.instagram.com/p/{m.group(1)}/'
-    return url
+    sc = extract_shortcode(url)
+    return f'https://www.instagram.com/p/{sc}/' if sc else url
 
 def make_filename(title, ext='mp4'):
-    name = re.sub(r'[<>:"/\\|?*\x00-\x1f#]', '', title or 'instagram').strip()
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f#@]', '', title or 'instagram').strip()
     name = re.sub(r'\s+', ' ', name)
     return (name[:80] or 'instagram') + '.' + ext
 
@@ -102,48 +104,46 @@ def _find_ffmpeg():
     nix = glob.glob('/nix/store/*/bin/ffmpeg')
     return nix[0] if nix else None
 
+def _make_loader():
+    return instaloader.Instaloader(
+        download_pictures=False, download_videos=False,
+        download_video_thumbnails=False, download_geotags=False,
+        download_comments=False, save_metadata=False,
+        compress_json=False, quiet=True)
 
-# ── Cobalt API ────────────────────────────────────────────────────────────────
 
-def cobalt_get_url(ig_url, fmt='mp4'):
-    payload = {'url': ig_url}
-    if fmt == 'mp3':
-        payload['downloadMode'] = 'audio'
+# ── instaloader helpers ───────────────────────────────────────────────────────
+
+def ig_get_post(shortcode):
+    L = _make_loader()
     try:
-        r = req_lib.post(COBALT, json=payload, headers=COBALT_HDR, timeout=20)
-        data = r.json()
-        status = data.get('status', '')
-        if status in ('tunnel', 'redirect'):
-            return data.get('url'), None
-        if status == 'picker':
-            items = data.get('picker', [])
-            if items:
-                return items[0].get('url'), None
-        return None, data.get('error', {}).get('code', 'Could not get download URL.')
-    except Exception as e:
-        return None, 'Download service unavailable. Please try again.'
-
-def cobalt_info(ig_url):
-    """Get basic info via oEmbed then verify with cobalt."""
-    title, thumbnail, uploader = 'Instagram Post', '', ''
-    try:
-        oe = req_lib.get(
-            'https://graph.facebook.com/v18.0/instagram_oembed',
-            params={'url': ig_url, 'omitscript': True},
-            headers={'User-Agent': COBALT_HDR['User-Agent']},
-            timeout=10)
-        if oe.status_code == 200:
-            d = oe.json()
-            title    = d.get('title', '') or title
-            uploader = d.get('author_name', '')
-            thumbnail = d.get('thumbnail_url', '')
+        post = instaloader.Post.from_shortcode(L.context, shortcode)
+        return post, None
+    except instaloader.exceptions.LoginRequiredException:
+        return None, 'This post is private. Only public posts can be downloaded.'
     except Exception:
-        pass
-    return {'title': title, 'thumbnail': thumbnail, 'uploader': uploader,
-            'duration': '—', 'duration_sec': 0}
+        return None, 'Post not found or unavailable. Make sure it is public.'
+
+def ig_post_info(post):
+    caption   = (post.caption or '')[:120].replace('\n', ' ')
+    title     = caption if caption else 'Instagram Post'
+    thumbnail = post.url
+    uploader  = post.owner_username
+    duration  = 0
+    if post.is_video:
+        duration = post.video_duration or 0
+    m, s = divmod(int(duration), 60)
+    return {
+        'title':        title,
+        'thumbnail':    thumbnail,
+        'uploader':     uploader,
+        'is_video':     post.is_video,
+        'duration':     f'{m}:{s:02d}' if duration else '—',
+        'duration_sec': int(duration),
+    }
 
 
-# ── Job helpers ───────────────────────────────────────────────────────────────
+# ── Worker ────────────────────────────────────────────────────────────────────
 
 def _set_job(job_id, updates):
     with jobs_lock:
@@ -162,28 +162,8 @@ def schedule_cleanup(job_id, path):
         with jobs_lock: jobs.pop(job_id, None)
     threading.Thread(target=_cleanup, daemon=True).start()
 
-
-# ── Rate limiter ──────────────────────────────────────────────────────────────
-
-def _check_rate(ip):
-    now = time.time()
-    with _rate_lock:
-        _rate_store[ip] = [t for t in _rate_store[ip] if now - t < 60]
-        if len(_rate_store[ip]) >= RATE_LIMIT: return False
-        _rate_store[ip].append(now)
-        return True
-
-def _client_ip():
-    return (request.headers.get('X-Forwarded-For', '').split(',')[0].strip()
-            or request.remote_addr or 'unknown')
-
-
-# ── Worker ────────────────────────────────────────────────────────────────────
-
 def download_stream(src_url, output_path, job_id):
-    r = req_lib.get(src_url, stream=True, timeout=120,
-                    headers={'User-Agent': COBALT_HDR['User-Agent'],
-                             'Referer': 'https://www.instagram.com/'})
+    r = req_lib.get(src_url, stream=True, timeout=120, headers=_DL_HEADERS)
     r.raise_for_status()
     total = int(r.headers.get('content-length', 0))
     done  = 0
@@ -198,39 +178,61 @@ def download_stream(src_url, output_path, job_id):
                         if jobs.get(job_id, {}).get('status') == 'processing':
                             jobs[job_id]['progress'] = pct
 
-def do_download(job_id, url, title, fmt):
+def do_download(job_id, shortcode, title, fmt):
     _set_job(job_id, {'status': 'processing', 'progress': 5})
     try:
-        src_url, err = cobalt_get_url(url, fmt)
-        if err or not src_url:
-            _set_job(job_id, {'status': 'error', 'error': err or 'No download URL found.'})
-            return
+        post, err = ig_get_post(shortcode)
+        if err or not post:
+            _set_job(job_id, {'status': 'error', 'error': err or 'Could not fetch post.'}); return
+
+        if fmt == 'mp3' or post.is_video:
+            src_url = post.video_url
+        else:
+            src_url = post.url  # image/thumbnail
+
+        if not src_url:
+            _set_job(job_id, {'status': 'error', 'error': 'No media URL found.'}); return
 
         file_id  = str(uuid.uuid4())
-        ext      = 'mp3' if fmt == 'mp3' else 'mp4'
-        tmp_path = os.path.join(DOWNLOAD_DIR, f'{file_id}.{ext}')
+        tmp_ext  = 'mp4' if post.is_video else 'jpg'
+        tmp_path = os.path.join(DOWNLOAD_DIR, f'{file_id}.{tmp_ext}')
 
         download_stream(src_url, tmp_path, job_id)
-        _set_job(job_id, {'progress': 95})
+        _set_job(job_id, {'progress': 92})
 
-        # If MP3 requested but file came as mp4, extract audio
-        if fmt == 'mp3' and tmp_path.endswith('.mp4'):
+        # Extract MP3 if requested
+        if fmt == 'mp3' and post.is_video:
             mp3_path = os.path.join(DOWNLOAD_DIR, f'{file_id}.mp3')
             ffmpeg = _find_ffmpeg()
             if ffmpeg:
                 subprocess.run([ffmpeg, '-i', tmp_path, '-q:a', '0', '-map', 'a',
                                 mp3_path, '-y'], capture_output=True, timeout=120)
                 if os.path.exists(mp3_path):
-                    os.remove(tmp_path)
-                    tmp_path = mp3_path
+                    os.remove(tmp_path); tmp_path = mp3_path
 
-        filename = make_filename(title or 'instagram', 'mp3' if fmt == 'mp3' else 'mp4')
+        out_ext  = 'mp3' if (fmt == 'mp3' and post.is_video) else tmp_ext
+        filename = make_filename(title or f'@{post.owner_username}', out_ext)
         _set_job(job_id, {'status': 'done', 'file': tmp_path,
                            'filename': filename, 'progress': 100})
         schedule_cleanup(job_id, tmp_path)
 
     except Exception:
         _set_job(job_id, {'status': 'error', 'error': 'Download failed. Please try again.'})
+
+
+# ── Rate limiter ──────────────────────────────────────────────────────────────
+
+def _check_rate(ip):
+    now = time.time()
+    with _rate_lock:
+        _rate_store[ip] = [t for t in _rate_store[ip] if now - t < 60]
+        if len(_rate_store[ip]) >= RATE_LIMIT: return False
+        _rate_store[ip].append(now)
+        return True
+
+def _client_ip():
+    return (request.headers.get('X-Forwarded-For', '').split(',')[0].strip()
+            or request.remote_addr or 'unknown')
 
 
 # ── Security headers ──────────────────────────────────────────────────────────
@@ -268,7 +270,13 @@ def get_info():
     url  = normalize_url(data.get('url', '').strip())
     if not url or not is_valid_url(url):
         return jsonify({'error': 'Invalid Instagram URL — paste a post, Reel, or IGTV link.'}), 400
-    info = cobalt_info(url)
+    sc = extract_shortcode(url)
+    if not sc:
+        return jsonify({'error': 'Could not parse Instagram URL.'}), 400
+    post, err = ig_get_post(sc)
+    if err or not post:
+        return jsonify({'error': err or 'Could not fetch post.'}), 400
+    info = ig_post_info(post)
     info['url'] = url
     return jsonify(info)
 
@@ -283,6 +291,9 @@ def start_convert():
     if fmt not in ('mp4', 'mp3'): fmt = 'mp4'
     if not is_valid_url(url):
         return jsonify({'error': 'Invalid Instagram URL'}), 400
+    sc = extract_shortcode(url)
+    if not sc:
+        return jsonify({'error': 'Could not parse Instagram URL'}), 400
 
     job_id = str(uuid.uuid4())
     with jobs_lock:
@@ -291,7 +302,7 @@ def start_convert():
         _save_job(job_id, jobs[job_id])
 
     threading.Thread(target=do_download,
-                     args=(job_id, url, title or None, fmt), daemon=True).start()
+                     args=(job_id, sc, title or None, fmt), daemon=True).start()
     return jsonify({'job_id': job_id})
 
 @app.route('/status/<job_id>')
@@ -320,7 +331,7 @@ def download_file(job_id):
     if not os.path.exists(path):
         return jsonify({'error': 'File expired. Please download again.'}), 410
     safe = re.sub(r'[^\w\s\-\.\(\)]', '', filename).strip() or 'instagram.mp4'
-    mime = 'audio/mpeg' if safe.endswith('.mp3') else 'video/mp4'
+    mime = 'audio/mpeg' if safe.endswith('.mp3') else ('image/jpeg' if safe.endswith('.jpg') else 'video/mp4')
     return send_file(path, as_attachment=True, download_name=safe, mimetype=mime)
 
 
