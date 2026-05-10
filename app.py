@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, send_file, render_template
 from flask_cors import CORS
-import subprocess, os, uuid, json, re, glob, threading, time, shutil
+import os, uuid, json, re, glob, threading, time, shutil, subprocess
 import requests as req_lib
 from collections import defaultdict
 
@@ -14,29 +14,25 @@ app = Flask(__name__)
 CORS(app)
 
 DOWNLOAD_DIR = '/tmp/ig_cache'
-YTDLP        = os.environ.get('YTDLP_PATH', 'yt-dlp')
 FILE_TTL     = 1800
-JOB_TIMEOUT  = 300
 RATE_LIMIT   = 10
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-jobs      = {}
-jobs_lock = threading.Lock()
+jobs        = {}
+jobs_lock   = threading.Lock()
 _rate_store = defaultdict(list)
 _rate_lock  = threading.Lock()
 
-
-def _update_ytdlp():
-    try:
-        subprocess.run([YTDLP, '--update-to', 'stable'], capture_output=True, timeout=90)
-    except Exception:
-        pass
-
-threading.Thread(target=_update_ytdlp, daemon=True).start()
+COBALT      = 'https://api.cobalt.tools/'
+COBALT_HDR  = {
+    'Accept':       'application/json',
+    'Content-Type': 'application/json',
+    'User-Agent':   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+}
 
 
-# ── Job persistence (shared across threads) ───────────────────────────────────
+# ── Job persistence ───────────────────────────────────────────────────────────
 
 def _job_path(job_id):
     return os.path.join(DOWNLOAD_DIR, f'job_{job_id}.json')
@@ -77,7 +73,7 @@ _load_all_jobs()
 # ── URL helpers ───────────────────────────────────────────────────────────────
 
 _IG_RE = re.compile(
-    r'(?:https?://)?(?:www\.)?instagram\.com/(?:p|reel|tv|reels)/([A-Za-z0-9_-]+)',
+    r'(?:https?://)?(?:www\.)?instagram\.com/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)',
     re.IGNORECASE)
 
 def is_valid_url(url):
@@ -92,30 +88,62 @@ def normalize_url(url):
         return f'https://www.instagram.com/p/{m.group(1)}/'
     return url
 
-def parse_ytdlp_error(stderr):
-    err = (stderr or '').lower()
-    if 'login' in err or 'checkpoint' in err or 'auth' in err:
-        return 'This post requires login. Try a public post or Reel.'
-    if 'private' in err:
-        return 'This account is private. Only public posts can be downloaded.'
-    if 'not found' in err or '404' in err:
-        return 'Post not found. Check the link and try again.'
-    if 'rate' in err or 'too many' in err:
-        return 'Instagram rate limit hit. Please try again in a moment.'
-    return 'Could not download this post. Make sure it is public.'
-
 def make_filename(title, ext='mp4'):
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f#]', '', title or 'instagram').strip()
     name = re.sub(r'\s+', ' ', name)
     return (name[:80] or 'instagram') + '.' + ext
 
-def _find_ffmpeg_dir():
+def _find_ffmpeg():
     p = shutil.which('ffmpeg')
-    if p: return os.path.dirname(p)
+    if p: return p
     for d in ['/nix/var/nix/profiles/default/bin', '/usr/bin', '/usr/local/bin']:
-        if os.path.isfile(os.path.join(d, 'ffmpeg')): return d
+        fp = os.path.join(d, 'ffmpeg')
+        if os.path.isfile(fp): return fp
     nix = glob.glob('/nix/store/*/bin/ffmpeg')
-    return os.path.dirname(nix[0]) if nix else None
+    return nix[0] if nix else None
+
+
+# ── Cobalt API ────────────────────────────────────────────────────────────────
+
+def cobalt_get_url(ig_url, fmt='mp4'):
+    payload = {'url': ig_url}
+    if fmt == 'mp3':
+        payload['downloadMode'] = 'audio'
+    try:
+        r = req_lib.post(COBALT, json=payload, headers=COBALT_HDR, timeout=20)
+        data = r.json()
+        status = data.get('status', '')
+        if status in ('tunnel', 'redirect'):
+            return data.get('url'), None
+        if status == 'picker':
+            items = data.get('picker', [])
+            if items:
+                return items[0].get('url'), None
+        return None, data.get('error', {}).get('code', 'Could not get download URL.')
+    except Exception as e:
+        return None, 'Download service unavailable. Please try again.'
+
+def cobalt_info(ig_url):
+    """Get basic info via oEmbed then verify with cobalt."""
+    title, thumbnail, uploader = 'Instagram Post', '', ''
+    try:
+        oe = req_lib.get(
+            'https://graph.facebook.com/v18.0/instagram_oembed',
+            params={'url': ig_url, 'omitscript': True},
+            headers={'User-Agent': COBALT_HDR['User-Agent']},
+            timeout=10)
+        if oe.status_code == 200:
+            d = oe.json()
+            title    = d.get('title', '') or title
+            uploader = d.get('author_name', '')
+            thumbnail = d.get('thumbnail_url', '')
+    except Exception:
+        pass
+    return {'title': title, 'thumbnail': thumbnail, 'uploader': uploader,
+            'duration': '—', 'duration_sec': 0}
+
+
+# ── Job helpers ───────────────────────────────────────────────────────────────
 
 def _set_job(job_id, updates):
     with jobs_lock:
@@ -152,67 +180,54 @@ def _client_ip():
 
 # ── Worker ────────────────────────────────────────────────────────────────────
 
-_PROGRESS_RE = re.compile(r'\[download\]\s+([\d.]+)%')
-
-def build_cmd(url, output_template, fmt='mp4'):
-    headers = [
-        '--add-header', 'User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
-        '--add-header', 'Accept-Language:en-US,en;q=0.9',
-    ]
-    if fmt == 'mp3':
-        cmd = [YTDLP, '-x', '--audio-format', 'mp3', '--audio-quality', '320K',
-               '--no-playlist', '--newline'] + headers
-    else:
-        cmd = [YTDLP, '-f', 'bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best',
-               '--merge-output-format', 'mp4',
-               '--no-playlist', '--newline'] + headers
-    ffdir = _find_ffmpeg_dir()
-    if ffdir: cmd += ['--ffmpeg-location', ffdir]
-    cmd += ['-o', output_template, url]
-    return cmd
-
-def do_convert(job_id, url, title, fmt):
-    _set_job(job_id, {'status': 'processing', 'progress': 0})
-    file_id = str(uuid.uuid4())
-    output_template = os.path.join(DOWNLOAD_DIR, f'{file_id}.%(ext)s')
-    cmd = build_cmd(url, output_template, fmt)
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stderr_lines = []
-
-        def _read_stderr():
-            for line in proc.stderr:
-                stderr_lines.append(line)
-                m = _PROGRESS_RE.search(line)
-                if m:
-                    pct = min(int(float(m.group(1))), 90)
+def download_stream(src_url, output_path, job_id):
+    r = req_lib.get(src_url, stream=True, timeout=120,
+                    headers={'User-Agent': COBALT_HDR['User-Agent'],
+                             'Referer': 'https://www.instagram.com/'})
+    r.raise_for_status()
+    total = int(r.headers.get('content-length', 0))
+    done  = 0
+    with open(output_path, 'wb') as f:
+        for chunk in r.iter_content(chunk_size=65536):
+            if chunk:
+                f.write(chunk)
+                done += len(chunk)
+                if total:
+                    pct = min(int(done / total * 90), 90)
                     with jobs_lock:
                         if jobs.get(job_id, {}).get('status') == 'processing':
                             jobs[job_id]['progress'] = pct
 
-        t = threading.Thread(target=_read_stderr, daemon=True)
-        t.start()
-        try:
-            proc.wait(timeout=JOB_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            _set_job(job_id, {'status': 'error', 'error': 'Download timed out. Please try again.'})
-            return
-        t.join(timeout=5)
-
-        if proc.returncode != 0:
-            _set_job(job_id, {'status': 'error', 'error': parse_ytdlp_error(''.join(stderr_lines))})
+def do_download(job_id, url, title, fmt):
+    _set_job(job_id, {'status': 'processing', 'progress': 5})
+    try:
+        src_url, err = cobalt_get_url(url, fmt)
+        if err or not src_url:
+            _set_job(job_id, {'status': 'error', 'error': err or 'No download URL found.'})
             return
 
-        files = glob.glob(os.path.join(DOWNLOAD_DIR, f'{file_id}.*'))
-        if not files:
-            _set_job(job_id, {'status': 'error', 'error': 'Output file not found. Please try again.'})
-            return
+        file_id  = str(uuid.uuid4())
+        ext      = 'mp3' if fmt == 'mp3' else 'mp4'
+        tmp_path = os.path.join(DOWNLOAD_DIR, f'{file_id}.{ext}')
 
-        ext = 'mp3' if fmt == 'mp3' else 'mp4'
-        filename = make_filename(title or 'instagram', ext)
-        _set_job(job_id, {'status': 'done', 'file': files[0], 'filename': filename, 'progress': 100})
-        schedule_cleanup(job_id, files[0])
+        download_stream(src_url, tmp_path, job_id)
+        _set_job(job_id, {'progress': 95})
+
+        # If MP3 requested but file came as mp4, extract audio
+        if fmt == 'mp3' and tmp_path.endswith('.mp4'):
+            mp3_path = os.path.join(DOWNLOAD_DIR, f'{file_id}.mp3')
+            ffmpeg = _find_ffmpeg()
+            if ffmpeg:
+                subprocess.run([ffmpeg, '-i', tmp_path, '-q:a', '0', '-map', 'a',
+                                mp3_path, '-y'], capture_output=True, timeout=120)
+                if os.path.exists(mp3_path):
+                    os.remove(tmp_path)
+                    tmp_path = mp3_path
+
+        filename = make_filename(title or 'instagram', 'mp3' if fmt == 'mp3' else 'mp4')
+        _set_job(job_id, {'status': 'done', 'file': tmp_path,
+                           'filename': filename, 'progress': 100})
+        schedule_cleanup(job_id, tmp_path)
 
     except Exception:
         _set_job(job_id, {'status': 'error', 'error': 'Download failed. Please try again.'})
@@ -236,12 +251,10 @@ def index():
 
 @app.route('/manifest.json')
 def manifest():
-    return jsonify({
-        "name": "InstaGet", "short_name": "InstaGet",
-        "description": "Download Instagram videos and photos",
-        "start_url": "/", "display": "standalone",
-        "background_color": "#0a0a0a", "theme_color": "#833ab4", "icons": []
-    })
+    return jsonify({"name":"InstaGet","short_name":"InstaGet",
+                    "description":"Download Instagram videos and photos",
+                    "start_url":"/","display":"standalone",
+                    "background_color":"#0a0a0a","theme_color":"#833ab4","icons":[]})
 
 @app.route('/robots.txt')
 def robots():
@@ -255,31 +268,9 @@ def get_info():
     url  = normalize_url(data.get('url', '').strip())
     if not url or not is_valid_url(url):
         return jsonify({'error': 'Invalid Instagram URL — paste a post, Reel, or IGTV link.'}), 400
-    try:
-        result = subprocess.run(
-            [YTDLP, '--dump-json', '--no-playlist',
-             '--add-header', 'User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
-             url],
-            capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            return jsonify({'error': parse_ytdlp_error(result.stderr)}), 400
-        info     = json.loads(result.stdout)
-        duration = info.get('duration', 0) or 0
-        m, s     = divmod(int(duration), 60)
-        is_video = info.get('ext') not in ('jpg', 'jpeg', 'png', 'webp')
-        return jsonify({
-            'title':        info.get('title', '') or info.get('description', '') or 'Instagram Post',
-            'thumbnail':    info.get('thumbnail', ''),
-            'duration':     f'{m}:{s:02d}' if duration else '—',
-            'duration_sec': int(duration),
-            'uploader':     info.get('uploader', '') or info.get('channel', ''),
-            'is_video':     is_video,
-            'url':          url,
-        })
-    except subprocess.TimeoutExpired:
-        return jsonify({'error': 'Request timed out. Please try again.'}), 504
-    except Exception:
-        return jsonify({'error': 'Failed to fetch post info. Please try again.'}), 500
+    info = cobalt_info(url)
+    info['url'] = url
+    return jsonify(info)
 
 @app.route('/start', methods=['POST'])
 def start_convert():
@@ -299,7 +290,8 @@ def start_convert():
                          'error': None, 'progress': 0}
         _save_job(job_id, jobs[job_id])
 
-    threading.Thread(target=do_convert, args=(job_id, url, title or None, fmt), daemon=True).start()
+    threading.Thread(target=do_download,
+                     args=(job_id, url, title or None, fmt), daemon=True).start()
     return jsonify({'job_id': job_id})
 
 @app.route('/status/<job_id>')
