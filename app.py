@@ -108,82 +108,38 @@ def _find_ffmpeg():
     return nix[0] if nix else None
 
 
-# ── Instagram scraper ─────────────────────────────────────────────────────────
+# ── Instagram via yt-dlp (same "trick" as YouTube) ─────────────────────────────────
+
+INSTA_COOKIE_FILE = os.environ.get('INSTA_COOKIE_FILE', '')
+PROXY_URL = os.environ.get('PROXY_URL', '')
+
 
 def ig_scrape(shortcode):
-    """
-    Fetch post data from Instagram's public embed + JSON endpoints.
-    Works for public posts without any login.
-    """
-    session = req_lib.Session()
-    session.headers.update(_HEADERS)
-
-    # 1. Hit main page first to get cookies
+    url = f'https://www.instagram.com/p/{shortcode}/'
     try:
-        session.get('https://www.instagram.com/', timeout=10)
-    except Exception:
-        pass
-
-    # 2. Try embed page to get video/image URL
-    embed_url = f'https://www.instagram.com/p/{shortcode}/embed/captioned/'
-    try:
-        r = session.get(embed_url, timeout=15)
-        html = r.text
-
-        # Extract video URL
-        video_url = None
-        for pattern in [
-            r'"video_url"\s*:\s*"([^"]+)"',
-            r'<video[^>]+src="([^"]+)"',
-            r'src="(https://[^"]+\.mp4[^"]*)"',
-        ]:
-            m = re.search(pattern, html)
-            if m:
-                video_url = m.group(1).replace('\\u0026', '&').replace('\/', '/')
-                break
-
-        # Extract thumbnail
-        thumb_url = ''
-        for pattern in [
-            r'"display_url"\s*:\s*"([^"]+)"',
-            r'<img[^>]+src="(https://[^"]+(?:jpg|jpeg|png|webp)[^"]*)"',
-        ]:
-            m = re.search(pattern, html)
-            if m:
-                thumb_url = m.group(1).replace('\\u0026', '&').replace('\/', '/')
-                break
-
-        # Extract title/caption
-        title = 'Instagram Post'
-        for pattern in [
-            r'<title>([^<]+)</title>',
-            r'"text"\s*:\s*"([^"]{10,200})"',
-        ]:
-            m = re.search(pattern, html)
-            if m:
-                t = m.group(1).strip()
-                if t and 'Instagram' not in t[:10]:
-                    title = t[:150]
-                    break
-
-        # Extract username
-        uploader = ''
-        m = re.search(r'"username"\s*:\s*"([^"]+)"', html)
-        if m:
-            uploader = m.group(1)
-
-        is_video = video_url is not None
-
-        return {
-            'video_url': video_url,
-            'thumb_url': thumb_url,
-            'title':     title,
-            'uploader':  uploader,
-            'is_video':  is_video,
-        }, None
-
+        cmd = ['yt-dlp', '--dump-json', '--no-warnings', url]
+        if INSTA_COOKIE_FILE and os.path.exists(INSTA_COOKIE_FILE):
+            cmd += ['--cookies', INSTA_COOKIE_FILE]
+        if PROXY_URL:
+            cmd += ['--proxy', PROXY_URL]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout)
+            return {
+                'video_url': data.get('url', ''),
+                'thumb_url': data.get('thumbnail', ''),
+                'title': data.get('title', 'Instagram Post'),
+                'uploader': data.get('uploader', '') or data.get('channel', ''),
+                'is_video': data.get('ext', '') in ('mp4', 'mov', 'webm'),
+            }, None
+        err = result.stderr.strip()
+        if 'login' in err.lower() or 'sessionid' in err.lower():
+            return None, 'Instagram requires login. Set INSTA_COOKIE_FILE env var with session cookies.'
+        return None, err or 'Could not fetch post.'
+    except subprocess.TimeoutExpired:
+        return None, 'Request timed out.'
     except Exception as e:
-        return None, 'Could not fetch post. Make sure it is a public post.'
+        return None, str(e)
 
 
 # ── Worker ────────────────────────────────────────────────────────────────────
@@ -301,6 +257,10 @@ def manifest():
 @app.route('/robots.txt')
 def robots():
     return 'User-agent: *\nAllow: /\n', 200, {'Content-Type': 'text/plain'}
+
+@app.route('/ads.txt')
+def ads_txt():
+    return 'google.com, pub-3956390078338144, DIRECT, f08c47fec0942fa0\n', 200, {'Content-Type': 'text/plain'}
 
 @app.route('/info', methods=['POST'])
 def get_info():
