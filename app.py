@@ -108,38 +108,64 @@ def _find_ffmpeg():
     return nix[0] if nix else None
 
 
-# ── Instagram via yt-dlp (same "trick" as YouTube) ─────────────────────────────────
+# ── Instagram via yt-dlp (same "trick" as YouTube) + cloudscraper fallback ──
 
 INSTA_COOKIE_FILE = os.environ.get('INSTA_COOKIE_FILE', '')
 PROXY_URL = os.environ.get('PROXY_URL', '')
+YTDLP_PATH = shutil.which('yt-dlp')
 
 
 def ig_scrape(shortcode):
     url = f'https://www.instagram.com/p/{shortcode}/'
+
+    # Method 1: yt-dlp with optional cookies
+    if YTDLP_PATH:
+        try:
+            cmd = [YTDLP_PATH, '--dump-json', '--no-warnings', url]
+            if INSTA_COOKIE_FILE and os.path.exists(INSTA_COOKIE_FILE):
+                cmd += ['--cookies', INSTA_COOKIE_FILE]
+            if PROXY_URL:
+                cmd += ['--proxy', PROXY_URL]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0 and result.stdout.strip():
+                data = json.loads(result.stdout)
+                return {
+                    'video_url': data.get('url', ''),
+                    'thumb_url': data.get('thumbnail', ''),
+                    'title': data.get('title', 'Instagram Post'),
+                    'uploader': data.get('uploader', '') or data.get('channel', ''),
+                    'is_video': data.get('ext', '') in ('mp4', 'mov', 'webm'),
+                }, None
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception:
+            pass
+
+    # Method 2: SnapInsta via cloudscraper (bypasses Cloudflare)
     try:
-        cmd = ['yt-dlp', '--dump-json', '--no-warnings', url]
-        if INSTA_COOKIE_FILE and os.path.exists(INSTA_COOKIE_FILE):
-            cmd += ['--cookies', INSTA_COOKIE_FILE]
-        if PROXY_URL:
-            cmd += ['--proxy', PROXY_URL]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode == 0 and result.stdout.strip():
-            data = json.loads(result.stdout)
-            return {
-                'video_url': data.get('url', ''),
-                'thumb_url': data.get('thumbnail', ''),
-                'title': data.get('title', 'Instagram Post'),
-                'uploader': data.get('uploader', '') or data.get('channel', ''),
-                'is_video': data.get('ext', '') in ('mp4', 'mov', 'webm'),
-            }, None
-        err = result.stderr.strip()
-        if 'login' in err.lower() or 'sessionid' in err.lower():
-            return None, 'Instagram requires login. Set INSTA_COOKIE_FILE env var with session cookies.'
-        return None, err or 'Could not fetch post.'
-    except subprocess.TimeoutExpired:
-        return None, 'Request timed out.'
+        import cloudscraper
+        scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+        r = scraper.get('https://snapinsta.to/en2', timeout=15)
+        html = r.text
+        k_token = re.search(r'k_token\s*=\s*"([^"]+)"', html)
+        k_exp = re.search(r'k_exp\s*=\s*"([^"]+)"', html)
+        k_ver = re.search(r'k_ver\s*=\s*"([^"]+)"', html)
+        if k_token and k_exp and k_ver:
+            resp = scraper.post('https://snapinsta.to/api/ajaxSearch', data={
+                'q': url, 't': 'media', 'v': k_ver.group(1),
+                'lang': 'en', 'cftoken': k_token.group(1), 'html': '',
+            }, headers={'Origin': 'https://snapinsta.to', 'Referer': 'https://snapinsta.to/en2',
+                       'X-Requested-With': 'XMLHttpRequest'}, timeout=20)
+            data = resp.json()
+            if data.get('status') == 'ok' and data.get('data'):
+                return {'video_url': data['data'], 'thumb_url': '', 'title': 'Instagram Post',
+                        'uploader': '', 'is_video': True}, None
+    except ImportError:
+        pass
     except Exception as e:
-        return None, str(e)
+        pass
+
+    return None, 'Could not fetch post. Instagram requires login or cookies.'
 
 
 # ── Worker ────────────────────────────────────────────────────────────────────
