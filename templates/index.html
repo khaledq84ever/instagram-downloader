@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0a0a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-3956390078338144" crossorigin="anonymous"></script>
   <title>InstaGet — Instagram Video & Photo Downloader</title>
   <meta name="description" content="Download Instagram videos, Reels and photos. Free, fast, no signup required." />
@@ -17,6 +21,14 @@
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html { font-size: 16px; scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+
+    /* Mobile-first: no tap highlight flash, no 300ms delay on tap, no callout. */
+    button, a, input, .q-btn {
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+    html, body { -webkit-touch-callout: none; }
+    input, textarea { -webkit-touch-callout: default; -webkit-user-select: text; user-select: text; }
 
     :root {
       --bg:        #0a0a0a;
@@ -42,9 +54,12 @@
       font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
       background: var(--bg);
       color: var(--text);
+      /* 100dvh handles iOS Safari's collapsing URL bar correctly; 100vh fallback. */
       min-height: 100vh;
+      min-height: 100dvh;
       display: flex; flex-direction: column;
       -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
     }
 
     body::before {
@@ -70,7 +85,9 @@
 
     /* ── Header ── */
     header {
-      padding: clamp(10px,2vw,18px) 16px 0;
+      padding: max(clamp(10px,2vw,18px), env(safe-area-inset-top)) 16px 0;
+      padding-left: max(16px, env(safe-area-inset-left));
+      padding-right: max(16px, env(safe-area-inset-right));
       text-align: center;
     }
 
@@ -167,7 +184,23 @@
       align-items: center; justify-content: center;
       transition: color 0.2s, background 0.2s;
     }
-    .btn-clear:hover { color: var(--text); background: var(--border); }
+    @media (hover: hover) and (pointer: fine) {
+      .btn-clear:hover { color: var(--text); background: var(--border); }
+      .btn-paste:hover { border-color: var(--p1); color: var(--text); background: var(--surface3); }
+      .btn-primary:hover { opacity: 0.9; box-shadow: 0 6px 24px rgba(131,58,180,0.52); }
+      .q-btn:hover { border-color: var(--p1); color: var(--text); transform: translateY(-1px); }
+      .btn-retry:hover { background: var(--danger); color: #fff; }
+      .btn-download:hover { opacity: 0.92; }
+      .btn-copy-link:hover { border-color: var(--p1); color: var(--text); }
+      .btn-share:hover { border-color: var(--p2); color: var(--text); }
+      .btn-reset:hover { border-color: var(--p1); color: var(--text); }
+      .footer-handle:hover { opacity: 0.72; }
+    }
+    /* Active state works on both touch and mouse — gives tap feedback on phones. */
+    .btn-primary:active { transform: scale(0.97); }
+    .btn-paste:active, .q-btn:active, .btn-download:active,
+    .btn-copy-link:active, .btn-share:active, .btn-reset:active,
+    .btn-retry:active, .btn-clear:active { transform: scale(0.97); }
 
     .btn-paste {
       flex-shrink: 0; padding: 10px 16px;
@@ -177,7 +210,6 @@
       cursor: pointer; white-space: nowrap; min-height: 46px;
       transition: border-color 0.2s, color 0.2s, background 0.2s;
     }
-    .btn-paste:hover { border-color: var(--p1); color: var(--text); background: var(--surface3); }
 
     .btn-primary {
       flex-shrink: 0; padding: 13px 22px; border: none;
@@ -189,8 +221,6 @@
       box-shadow: 0 4px 18px rgba(131,58,180,0.38);
       transition: opacity 0.2s, transform 0.15s, box-shadow 0.2s;
     }
-    .btn-primary:hover { opacity: 0.9; box-shadow: 0 6px 24px rgba(131,58,180,0.52); }
-    .btn-primary:active { transform: scale(0.98); }
     .btn-primary:disabled { opacity: 0.38; cursor: not-allowed; box-shadow: none; }
 
     /* ── Format selector ── */
@@ -209,7 +239,6 @@
       display: flex; flex-direction: column; align-items: center; gap: 3px;
       transition: border-color 0.2s, color 0.2s, background 0.2s, transform 0.15s;
     }
-    .q-btn:hover { border-color: var(--p1); color: var(--text); transform: translateY(-1px); }
 
     .q-title { font-size: 0.85rem; font-weight: 800; line-height: 1.2; }
     .q-sub   { font-size: 0.65rem; font-weight: 600; opacity: 0.75; }
@@ -245,7 +274,6 @@
       font-family: inherit; font-size: 0.78rem; font-weight: 700;
       cursor: pointer; transition: background 0.2s, color 0.2s;
     }
-    .btn-retry:hover { background: var(--danger); color: #fff; }
 
     /* ── Result card ── */
     .video-card {
@@ -316,7 +344,6 @@
       gap: 10px; text-decoration: none; min-height: 50px;
       box-shadow: 0 4px 18px rgba(16,185,129,0.28); transition: opacity 0.2s;
     }
-    .btn-download:hover { opacity: 0.92; }
     .btn-download.pulse { animation: pulse-glow 1.8s ease-in-out infinite; }
     .btn-download svg { width: 20px; height: 20px; flex-shrink: 0; }
 
@@ -329,7 +356,6 @@
       display: none; align-items: center; justify-content: center; gap: 6px; min-height: 42px;
       transition: border-color 0.2s, color 0.2s;
     }
-    .btn-copy-link:hover { border-color: var(--p1); color: var(--text); }
     .btn-copy-link.copied { color: var(--success); border-color: var(--success); }
 
     .btn-share {
@@ -339,7 +365,6 @@
       display: none; align-items: center; justify-content: center; gap: 6px; min-height: 42px;
       transition: border-color 0.2s, color 0.2s;
     }
-    .btn-share:hover { border-color: var(--p2); color: var(--text); }
 
     .btn-reset {
       width: 100%; padding: 10px; border: 1.5px dashed var(--border);
@@ -348,11 +373,14 @@
       cursor: pointer; min-height: 42px; display: none; margin-top: 7px;
       transition: border-color 0.2s, color 0.2s;
     }
-    .btn-reset:hover { border-color: var(--p1); color: var(--text); }
 
     /* ── Footer ── */
     footer {
-      padding: 14px 16px; border-top: 1px solid var(--border);
+      padding: 14px 16px;
+      padding-bottom: max(14px, env(safe-area-inset-bottom));
+      padding-left: max(16px, env(safe-area-inset-left));
+      padding-right: max(16px, env(safe-area-inset-right));
+      border-top: 1px solid var(--border);
       display: flex; align-items: center; justify-content: center;
       gap: 12px; flex-wrap: wrap;
     }
@@ -372,28 +400,61 @@
       -webkit-background-clip: text; -webkit-text-fill-color: transparent;
       text-decoration: none; transition: opacity 0.2s;
     }
-    .footer-handle:hover { opacity: 0.72; }
 
     /* ── Responsive ── */
     @media (min-width: 640px) { .converter { max-width: var(--max-w); } }
 
     @media (max-width: 639px) {
-      main { padding: 12px 12px 16px; }
-      header { padding: 10px 12px 0; }
-      .logo-icon { width: 30px; height: 30px; font-size: 0.9rem; }
+      main { padding: 12px 12px 16px;
+             padding-left: max(12px, env(safe-area-inset-left));
+             padding-right: max(12px, env(safe-area-inset-right)); }
+      header { padding: max(10px, env(safe-area-inset-top)) 12px 0; }
+      .logo-icon { width: 32px; height: 32px; font-size: 0.95rem; }
       .converter { margin-top: 14px; }
       .input-card { padding: 6px; gap: 5px; }
-      .url-input  { padding: 11px 6px 11px 10px; font-size: 0.92rem; }
-      .btn-paste  { padding: 9px 12px; font-size: 0.78rem; min-height: 42px; }
-      .btn-primary{ padding: 11px 14px; min-height: 42px; font-size: 0.88rem; }
-      .q-btn      { padding: 9px 4px 8px; }
-      footer { gap: 8px; padding: 10px 12px; }
+      /* IMPORTANT: input must stay >= 16px on iOS or Safari auto-zooms on focus. */
+      .url-input  { padding: 12px 8px 12px 12px; font-size: 16px; min-height: 44px; }
+      .btn-paste  { padding: 10px 14px; font-size: 0.82rem; min-height: 44px; }
+      .btn-primary{ padding: 11px 16px; min-height: 44px; font-size: 0.92rem; }
+      .btn-clear  { width: 40px; height: 40px; font-size: 0.9rem; }
+      .q-btn      { padding: 11px 4px 10px; min-height: 56px; }
+      footer { gap: 8px; padding: 10px 12px;
+               padding-bottom: max(10px, env(safe-area-inset-bottom)); }
       .footer-copy { display: none; }
+      /* Tone down the background grid on small screens — looks busy on phone. */
+      body::before { background-size: 32px 32px; opacity: 0.5; }
     }
 
-    @media (max-width: 380px) {
-      .btn-paste { display: none; }
-      .btn-primary { flex: 1; }
+    /* Very narrow phones: stack URL input above buttons for full-width typing. */
+    @media (max-width: 420px) {
+      .input-card { flex-wrap: wrap; padding: 8px; gap: 8px; }
+      .url-input  { flex: 1 1 100%; order: 1; padding: 13px 14px; }
+      .btn-clear  { order: 2; }
+      .btn-paste  { order: 3; flex: 1 1 0; min-width: 0; }
+      .btn-primary{ order: 4; flex: 2 1 0; min-width: 0; font-size: 1rem; }
+      /* Result card actions stack better on tiny screens. */
+      .video-card-inner { padding: 10px; gap: 10px; }
+      .video-thumb { width: 64px; height: 64px; }
+      .video-title { font-size: 0.88rem; }
+      .btn-row { flex-direction: column; }
+      .btn-copy-link, .btn-share { flex: 1; width: 100%; }
+    }
+
+    /* Landscape phones: trim vertical padding so the form fits without scroll. */
+    @media (max-height: 480px) and (orientation: landscape) {
+      header { padding-top: 6px; }
+      main { padding-top: 6px; padding-bottom: 6px; }
+      .hero { display: none; }
+      .converter { margin-top: 0; }
+    }
+
+    /* Respect users who prefer reduced motion. */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+      }
     }
   </style>
 </head>
