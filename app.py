@@ -1,8 +1,9 @@
 from flask import Flask, request, jsonify, send_file, render_template
 from flask_cors import CORS
-import os, uuid, json, re, glob, threading, time, shutil, subprocess
+import os, uuid, json, re, glob, threading, time, shutil, subprocess, urllib.parse
 import requests as req_lib
 from collections import defaultdict
+from html import unescape as _html_unescape
 
 try:
     import static_ffmpeg
@@ -108,64 +109,147 @@ def _find_ffmpeg():
     return nix[0] if nix else None
 
 
-# ── Instagram via yt-dlp (same "trick" as YouTube) + cloudscraper fallback ──
+# ── Instagram via snapsave.app (same "trick" as snaptik on TikTok) + yt-dlp fallback ──
 
 INSTA_COOKIE_FILE = os.environ.get('INSTA_COOKIE_FILE', '')
 PROXY_URL = os.environ.get('PROXY_URL', '')
 YTDLP_PATH = shutil.which('yt-dlp')
 
+_SNAPSAVE_CHARSET = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+/'
+_SNAPSAVE_EVAL_RE = re.compile(
+    r'\("([^"]+)",\s*\d+\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*\d+\)\)\s*$')
+
+
+def _snapsave_decode(js_body):
+    """Decode snapsave.app's obfuscated eval() response into raw HTML."""
+    m = _SNAPSAVE_EVAL_RE.search(js_body.strip())
+    if not m:
+        return None
+    h, n, t, e = m.group(1), m.group(2), int(m.group(3)), int(m.group(4))
+    if e <= 0 or e > len(_SNAPSAVE_CHARSET) or e >= len(n):
+        return None
+    sep = n[e]
+    out = []
+    i = 0
+    L = len(h)
+    while i < L:
+        s = ''
+        while i < L and h[i] != sep:
+            s += h[i]; i += 1
+        i += 1
+        digits = ''.join(str(n.find(c)) for c in s if 0 <= n.find(c) < e)
+        if digits:
+            try:
+                out.append(chr(int(digits, e) - t))
+            except (ValueError, OverflowError):
+                pass
+    raw = ''.join(out)
+    try:
+        return urllib.parse.unquote(raw)
+    except Exception:
+        return raw
+
+
+def _parse_snapsave_html(html):
+    """Extract media URLs, thumbnail, and title from snapsave's decoded HTML."""
+    if not html or ('error' in html.lower() and 'unable' in html.lower()):
+        return None
+    # Direct media URLs (mp4 first, then images)
+    hrefs = re.findall(r'href=[\\\\]*"([^"]+\.(?:mp4|jpg|jpeg|webp|png|heic)[^"]*)"', html, re.IGNORECASE)
+    if not hrefs:
+        hrefs = re.findall(r'https?://[^\s"\'<>\\]+\.(?:mp4|jpg|jpeg|webp|png|heic)[^\s"\'<>\\]*', html, re.IGNORECASE)
+    hrefs = [_html_unescape(u).replace('\\/', '/') for u in hrefs]
+    videos = [u for u in hrefs if '.mp4' in u.lower()]
+    images = [u for u in hrefs if not '.mp4' in u.lower()]
+    # Thumbnail
+    thumb_m = re.search(r'<img[^>]+src=[\\\\]*"([^"]+)"', html, re.IGNORECASE)
+    thumb = _html_unescape(thumb_m.group(1)).replace('\\/', '/') if thumb_m else (images[0] if images else '')
+    # Caption / title
+    cap_m = (re.search(r'class=[\\\\]*"[^"]*download-items?__caption[^"]*"[^>]*>([^<]+)<', html) or
+             re.search(r'<h\d[^>]*>([^<]+)</h\d>', html) or
+             re.search(r'<p[^>]*class=[\\\\]*"[^"]*caption[^"]*"[^>]*>([^<]+)<', html))
+    title = _html_unescape(cap_m.group(1).strip())[:120] if cap_m else 'Instagram Post'
+    if videos:
+        return {'video_url': videos[0], 'thumb_url': thumb, 'title': title,
+                'uploader': '', 'is_video': True}
+    if images:
+        return {'video_url': '', 'thumb_url': images[0], 'title': title,
+                'uploader': '', 'is_video': False}
+    return None
+
+
+def _snapsave_fetch(url):
+    """Primary: snapsave.app — same trick as snaptik on the TikTok site."""
+    try:
+        try:
+            import cloudscraper
+            sess = cloudscraper.create_scraper(
+                browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+        except ImportError:
+            sess = req_lib.Session()
+            sess.headers.update({'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                '(KHTML, like Gecko) Chrome/124.0 Safari/537.36'})
+        # Warm cookies
+        sess.get('https://snapsave.app/', timeout=15)
+        r = sess.post(
+            'https://snapsave.app/action.php?lang=en',
+            data={'url': url},
+            headers={'Origin': 'https://snapsave.app',
+                     'Referer': 'https://snapsave.app/',
+                     'X-Requested-With': 'XMLHttpRequest',
+                     'Accept': '*/*'},
+            timeout=25)
+        if r.status_code != 200 or not r.text:
+            return None, f'snapsave HTTP {r.status_code}'
+        decoded = _snapsave_decode(r.text)
+        if not decoded:
+            return None, 'Could not decode snapsave response.'
+        if 'Unable to connect' in decoded or '"error_' in decoded:
+            return None, 'snapsave could not reach Instagram for this post.'
+        parsed = _parse_snapsave_html(decoded)
+        if not parsed:
+            return None, 'No download links found in snapsave response.'
+        return parsed, None
+    except Exception as e:
+        return None, f'snapsave error: {e}'
+
+
+def _ytdlp_fetch(url):
+    if not YTDLP_PATH:
+        return None, 'yt-dlp not installed'
+    try:
+        cmd = [YTDLP_PATH, '--dump-json', '--no-warnings', url]
+        if INSTA_COOKIE_FILE and os.path.exists(INSTA_COOKIE_FILE):
+            cmd += ['--cookies', INSTA_COOKIE_FILE]
+        if PROXY_URL:
+            cmd += ['--proxy', PROXY_URL]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout)
+            return {
+                'video_url': data.get('url', ''),
+                'thumb_url': data.get('thumbnail', ''),
+                'title': data.get('title', 'Instagram Post'),
+                'uploader': data.get('uploader', '') or data.get('channel', ''),
+                'is_video': data.get('ext', '') in ('mp4', 'mov', 'webm'),
+            }, None
+        return None, (result.stderr.strip()[:200] or 'yt-dlp returned no data')
+    except subprocess.TimeoutExpired:
+        return None, 'yt-dlp timed out'
+    except Exception as e:
+        return None, f'yt-dlp error: {e}'
+
 
 def ig_scrape(shortcode):
     url = f'https://www.instagram.com/p/{shortcode}/'
-
-    # Method 1: yt-dlp with optional cookies
-    if YTDLP_PATH:
-        try:
-            cmd = [YTDLP_PATH, '--dump-json', '--no-warnings', url]
-            if INSTA_COOKIE_FILE and os.path.exists(INSTA_COOKIE_FILE):
-                cmd += ['--cookies', INSTA_COOKIE_FILE]
-            if PROXY_URL:
-                cmd += ['--proxy', PROXY_URL]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            if result.returncode == 0 and result.stdout.strip():
-                data = json.loads(result.stdout)
-                return {
-                    'video_url': data.get('url', ''),
-                    'thumb_url': data.get('thumbnail', ''),
-                    'title': data.get('title', 'Instagram Post'),
-                    'uploader': data.get('uploader', '') or data.get('channel', ''),
-                    'is_video': data.get('ext', '') in ('mp4', 'mov', 'webm'),
-                }, None
-        except subprocess.TimeoutExpired:
-            pass
-        except Exception:
-            pass
-
-    # Method 2: SnapInsta via cloudscraper (bypasses Cloudflare)
-    try:
-        import cloudscraper
-        scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
-        r = scraper.get('https://snapinsta.to/en2', timeout=15)
-        html = r.text
-        k_token = re.search(r'k_token\s*=\s*"([^"]+)"', html)
-        k_exp = re.search(r'k_exp\s*=\s*"([^"]+)"', html)
-        k_ver = re.search(r'k_ver\s*=\s*"([^"]+)"', html)
-        if k_token and k_exp and k_ver:
-            resp = scraper.post('https://snapinsta.to/api/ajaxSearch', data={
-                'q': url, 't': 'media', 'v': k_ver.group(1),
-                'lang': 'en', 'cftoken': k_token.group(1), 'html': '',
-            }, headers={'Origin': 'https://snapinsta.to', 'Referer': 'https://snapinsta.to/en2',
-                       'X-Requested-With': 'XMLHttpRequest'}, timeout=20)
-            data = resp.json()
-            if data.get('status') == 'ok' and data.get('data'):
-                return {'video_url': data['data'], 'thumb_url': '', 'title': 'Instagram Post',
-                        'uploader': '', 'is_video': True}, None
-    except ImportError:
-        pass
-    except Exception as e:
-        pass
-
-    return None, 'Could not fetch post. Instagram requires login or cookies.'
+    data, err1 = _snapsave_fetch(url)
+    if data:
+        return data, None
+    data, err2 = _ytdlp_fetch(url)
+    if data:
+        return data, None
+    return None, err1 or err2 or 'Could not fetch this post.'
 
 
 # ── Worker ────────────────────────────────────────────────────────────────────
