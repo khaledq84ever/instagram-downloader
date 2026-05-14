@@ -331,6 +331,7 @@
 
     .status-text { font-size: 0.82rem; font-weight: 600; color: var(--muted); margin-bottom: 8px; display: none; }
 
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     @keyframes pulse-glow {
       0%,100% { box-shadow: 0 0 0 0 rgba(16,185,129,0.5), 0 5px 18px rgba(16,185,129,0.28); }
       50%      { box-shadow: 0 0 0 12px rgba(16,185,129,0), 0 5px 18px rgba(16,185,129,0.14); }
@@ -603,6 +604,39 @@
     $('urlInput').disabled = on;
   }
 
+  // Mobile-safe download. Fetches the file as a Blob then triggers <a download>
+  // from a blob: URL. This is the only path that reliably saves to disk on
+  // iOS Safari 13+ and Chrome Android — direct <a download href="/file"> opens
+  // the MP4 inline because mobile browsers ignore the download attribute.
+  async function triggerDownload(url, filename, button) {
+    const originalHtml = button ? button.innerHTML : null;
+    try {
+      if (button) {
+        button.innerHTML = '<span style="display:inline-block;animation:spin 0.8s linear infinite">⟳</span> Preparing…';
+        button.style.pointerEvents = 'none';
+      }
+      const res = await fetch(url, { credentials: 'same-origin' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 4000);
+    } catch (err) {
+      window.location.href = url;
+    } finally {
+      if (button && originalHtml !== null) {
+        button.innerHTML = originalHtml;
+        button.style.pointerEvents = '';
+      }
+    }
+  }
+
   async function handleConvert() {
     clearInterval(pollTimer);
     const url = $('urlInput').value.trim();
@@ -694,18 +728,28 @@
             $('statusText').style.display   = 'none';
 
             const dlUrl = `/download/${jobId}`;
+            const filename = data.filename || 'instagram.mp4';
             currentDownloadUrl = dlUrl;
 
-            const tmp = document.createElement('a');
-            tmp.href = dlUrl; tmp.download = data.filename || 'instagram.mp4';
-            document.body.appendChild(tmp); tmp.click(); document.body.removeChild(tmp);
+            // NOTE: do not auto-click a programmatic <a download>. On iOS Safari
+            // the `download` attribute is ignored for synthetic clicks, so the
+            // browser navigates to the MP4 URL and opens it inline as a video
+            // player in a new tab — which users see as "audio only opened in
+            // a new tab". User taps the visible button instead.
 
             const dl = $('btnDownload');
-            dl.href = dlUrl; dl.download = data.filename || 'instagram.mp4';
+            dl.href = dlUrl;
+            dl.download = filename;
             dl.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> ${selectedFmt === 'mp3' ? 'Download MP3' : 'Download MP4'}`;
             dl.style.display = 'flex';
             dl.classList.add('pulse');
             setTimeout(() => dl.classList.remove('pulse'), 7000);
+            // Mobile-safe download via blob fetch — forces a real save dialog
+            // on iOS Safari 13+ and Chrome Android instead of inline playback.
+            dl.onclick = (e) => {
+              e.preventDefault();
+              triggerDownload(dlUrl, filename, dl);
+            };
 
             $('btnCopyLink').style.display = 'flex';
             if (navigator.share) $('btnShare').style.display = 'flex';
