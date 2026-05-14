@@ -150,32 +150,75 @@ def _snapsave_decode(js_body):
         return raw
 
 
-def _parse_snapsave_html(html):
-    """Extract media URLs, thumbnail, and title from snapsave's decoded HTML."""
-    if not html or ('error' in html.lower() and 'unable' in html.lower()):
+def _unescape_js_string(s):
+    """Undo the JS string escapes snapsave uses inside innerHTML = \"...\"."""
+    return (s.replace('\\/', '/').replace('\\"', '"')
+             .replace("\\'", "'").replace('\\\\', '\\'))
+
+
+def _parse_snapsave_html(decoded):
+    """Extract media URLs from snapsave's decoded JS payload.
+
+    The payload is JS that assigns HTML to innerHTML: e.g.
+        document.getElementById("download-section").innerHTML = "<...>";
+    Each <div class="download-items"> contains an <a href="...rapidcdn..."> (the
+    download URL) and an <img src="..."> (thumb), with an icon class indicating
+    image vs video."""
+    if not decoded:
         return None
-    # Direct media URLs (mp4 first, then images)
-    hrefs = re.findall(r'href=[\\\\]*"([^"]+\.(?:mp4|jpg|jpeg|webp|png|heic)[^"]*)"', html, re.IGNORECASE)
-    if not hrefs:
-        hrefs = re.findall(r'https?://[^\s"\'<>\\]+\.(?:mp4|jpg|jpeg|webp|png|heic)[^\s"\'<>\\]*', html, re.IGNORECASE)
-    hrefs = [_html_unescape(u).replace('\\/', '/') for u in hrefs]
-    videos = [u for u in hrefs if '.mp4' in u.lower()]
-    images = [u for u in hrefs if not '.mp4' in u.lower()]
-    # Thumbnail
-    thumb_m = re.search(r'<img[^>]+src=[\\\\]*"([^"]+)"', html, re.IGNORECASE)
-    thumb = _html_unescape(thumb_m.group(1)).replace('\\/', '/') if thumb_m else (images[0] if images else '')
-    # Caption / title
-    cap_m = (re.search(r'class=[\\\\]*"[^"]*download-items?__caption[^"]*"[^>]*>([^<]+)<', html) or
+    if 'Unable to' in decoded or 'cannot be downloaded' in decoded.lower():
+        return None
+    # 1) Extract the inner HTML string from the innerHTML = "..." assignment.
+    inner_m = re.search(r'innerHTML\s*=\s*"((?:\\.|[^"\\])*)"', decoded, re.DOTALL)
+    html = _unescape_js_string(inner_m.group(1)) if inner_m else decoded
+    # 2) Iterate every top-level "download-items" block. Use a word boundary
+    #    (\b) after to avoid matching the nested "download-items__thumb" /
+    #    "download-items__btn" children.
+    blocks = re.findall(
+        r'<div[^>]*class="[^"]*download-items\b(?!__)[^"]*"[^>]*>(.*?)'
+        r'(?=<div[^>]*class="[^"]*download-items\b(?!__)|</section>|$)',
+        html, re.DOTALL)
+    if not blocks:
+        blocks = [html]
+    videos, images, thumbs = [], [], []
+    for blk in blocks:
+        href_m = re.search(r'<a[^>]+href="([^"]+)"', blk)
+        img_m = re.search(r'<img[^>]+src="([^"]+)"', blk)
+        is_video = 'icon-dlvideo' in blk
+        href = _html_unescape(href_m.group(1)) if href_m else ''
+        thumb = _html_unescape(img_m.group(1)) if img_m else ''
+        if not href:
+            continue
+        if is_video:
+            videos.append(href)
+        else:
+            images.append(href)
+        if thumb:
+            thumbs.append(thumb)
+    # 3) Fallback: bare URL pattern anywhere in the HTML.
+    if not videos and not images:
+        urls = re.findall(r'https?://[^\s"\'<>]+', html)
+        for u in urls:
+            if 'rapidcdn.app/v2' in u or 'rapidcdn.app/video' in u:
+                videos.append(u)
+            elif 'rapidcdn.app' in u and 'thumb' not in u:
+                images.append(u)
+        thumbs = [u for u in urls if 'rapidcdn.app/thumb' in u or '.jpg' in u]
+    if not videos and not images:
+        return None
+    # 4) Caption / title.
+    cap_m = (re.search(r'<p[^>]*class="[^"]*caption[^"]*"[^>]*>([^<]+)<', html, re.I) or
              re.search(r'<h\d[^>]*>([^<]+)</h\d>', html) or
-             re.search(r'<p[^>]*class=[\\\\]*"[^"]*caption[^"]*"[^>]*>([^<]+)<', html))
+             re.search(r'alt="([^"]{8,})"', html))
     title = _html_unescape(cap_m.group(1).strip())[:120] if cap_m else 'Instagram Post'
+    if title.lower().startswith('download instagram'):
+        title = 'Instagram Post'
+    thumb_url = thumbs[0] if thumbs else (images[0] if images else '')
     if videos:
-        return {'video_url': videos[0], 'thumb_url': thumb, 'title': title,
+        return {'video_url': videos[0], 'thumb_url': thumb_url, 'title': title,
                 'uploader': '', 'is_video': True}
-    if images:
-        return {'video_url': '', 'thumb_url': images[0], 'title': title,
-                'uploader': '', 'is_video': False}
-    return None
+    return {'video_url': '', 'thumb_url': images[0], 'title': title,
+            'uploader': '', 'is_video': False}
 
 
 def _snapsave_fetch(url):
