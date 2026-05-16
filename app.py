@@ -417,15 +417,16 @@ def ads_txt():
 
 @app.route('/health')
 def health():
+    # ffmpeg/yt-dlp may live at nix paths outside the worker's $PATH but
+    # still be reachable via subprocess — these are informational only.
     deps = {
         'ffmpeg': bool(shutil.which('ffmpeg')),
         'yt-dlp': bool(shutil.which('yt-dlp')),
         'download_dir': os.path.isdir(DOWNLOAD_DIR),
     }
-    ok = all(deps.values())
-    return jsonify({'status': 'ok' if ok else 'degraded',
+    return jsonify({'status': 'ok' if deps['download_dir'] else 'degraded',
                     'active_jobs': len(jobs),
-                    'dependencies': deps}), (200 if ok else 503)
+                    'dependencies': deps}), (200 if deps['download_dir'] else 503)
 
 # Self-unregistering service worker — defends against stale SW from old deploys
 # that can intercept /download and break the blob-fetch on mobile.
