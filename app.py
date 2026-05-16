@@ -415,6 +415,29 @@ def robots():
 def ads_txt():
     return 'google.com, pub-3956390078338144, DIRECT, f08c47fec0942fa0\n', 200, {'Content-Type': 'text/plain'}
 
+@app.route('/health')
+def health():
+    deps = {
+        'ffmpeg': bool(shutil.which('ffmpeg')),
+        'yt-dlp': bool(shutil.which('yt-dlp')),
+        'download_dir': os.path.isdir(DOWNLOAD_DIR),
+    }
+    ok = all(deps.values())
+    return jsonify({'status': 'ok' if ok else 'degraded',
+                    'active_jobs': len(jobs),
+                    'dependencies': deps}), (200 if ok else 503)
+
+# Self-unregistering service worker — defends against stale SW from old deploys
+# that can intercept /download and break the blob-fetch on mobile.
+@app.route('/sw.js')
+def sw_js():
+    return ("self.addEventListener('install',e=>self.skipWaiting());"
+            "self.addEventListener('activate',e=>e.waitUntil("
+            "self.registration.unregister().then(()=>self.clients.matchAll())"
+            ".then(c=>c.forEach(x=>x.navigate(x.url)))));",
+            200, {'Content-Type': 'application/javascript',
+                  'Cache-Control': 'no-store'})
+
 @app.route('/info', methods=['POST'])
 def get_info():
     if not _check_rate(_client_ip()):
