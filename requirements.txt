@@ -4,3 +4,4 @@ gunicorn
 static-ffmpeg
 requests
 cloudscraper
+instaloader==4.13.1

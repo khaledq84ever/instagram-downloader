@@ -284,6 +284,34 @@ def _ytdlp_fetch(url):
         return None, f'yt-dlp error: {e}'
 
 
+def _instaloader_fetch(shortcode):
+    """Last-resort backend: scrape via the Instaloader library.
+    Works for fully-public posts even when snapsave is dead and yt-dlp is
+    bot-blocked. Won't work for private/age-gated posts (no cookies)."""
+    try:
+        import instaloader
+    except ImportError:
+        return None, 'instaloader not installed'
+    try:
+        L = instaloader.Instaloader(
+            quiet=True, download_pictures=False, download_videos=False,
+            download_video_thumbnails=False, download_geotags=False,
+            download_comments=False, save_metadata=False, compress_json=False,
+            user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+        )
+        post = instaloader.Post.from_shortcode(L.context, shortcode)
+        return {
+            'video_url': post.video_url or '',
+            'thumb_url': post.url or '',
+            'title':     (post.caption or 'Instagram Post')[:200],
+            'uploader':  post.owner_username or '',
+            'is_video':  bool(post.is_video),
+        }, None
+    except Exception as e:
+        msg = str(e)[:160] or type(e).__name__
+        return None, f'instaloader: {msg}'
+
+
 def ig_scrape(shortcode):
     url = f'https://www.instagram.com/p/{shortcode}/'
     data, err1 = _snapsave_fetch(url)
@@ -292,7 +320,14 @@ def ig_scrape(shortcode):
     data, err2 = _ytdlp_fetch(url)
     if data:
         return data, None
-    return None, err1 or err2 or 'Could not fetch this post.'
+    data, err3 = _instaloader_fetch(shortcode)
+    if data:
+        return data, None
+    # All 3 backends failed. Don't leak internal jargon; tell the user
+    # what to actually do.
+    return None, ('Instagram is currently blocking automated downloads for this post. '
+                  'It may be private, age-gated, or temporarily geofenced. '
+                  'Try the Instagram app\'s share menu instead.')
 
 
 # ── Worker ────────────────────────────────────────────────────────────────────
