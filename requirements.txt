@@ -6,3 +6,4 @@ requests
 cloudscraper
 instaloader==4.13.1
 curl_cffi==0.7.4
+yt-dlp>=2025.1.15

@@ -505,11 +505,17 @@ def ig_scrape(shortcode):
             errors.append(f'{name}: {err}')
             print(f'[ig_scrape] {name} failed: {err}', flush=True)
     print(f'[ig_scrape] ALL backends failed: {" | ".join(errors)}', flush=True)
-    # If any backend complained the post is private/locked, surface that.
     joined = ' '.join(errors).lower()
-    if 'private' in joined or 'login' in joined or 'rate-limit' in joined:
+    # Private / age-gated / requires login
+    if 'private' in joined or 'login required' in joined or 'login or' in joined \
+       or 'authentication' in joined:
         return None, ('This post appears to be private, age-gated, or login-required. '
                       'We can only download fully public Instagram posts.')
+    # Rate-limited (429 from IG, 401 with "wait a few minutes", 403 Cloudflare)
+    if 'http 429' in joined or 'http 401' in joined or 'http 403' in joined \
+       or 'rate-limit' in joined or 'wait a few' in joined:
+        return None, ('Instagram is rate-limiting downloads right now. '
+                      'Try again in a few minutes, or try a different post.')
     return None, ('Instagram is currently blocking automated downloads for this post. '
                   'Try the Instagram app\'s share menu instead.')
 
