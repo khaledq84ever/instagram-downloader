@@ -284,10 +284,178 @@ def _ytdlp_fetch(url):
         return None, f'yt-dlp error: {e}'
 
 
+# ── Direct IG public endpoints + snapinsta — ported from reclip ──────────────
+# Reference: /home/khaled/reclip/extractors/instagram.py
+_IG_APP_ID = '936619743392459'
+_IG_ASBD_ID = '129477'
+_IG_ALPHA = ('ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+             'abcdefghijklmnopqrstuvwxyz0123456789-_')
+
+def _shortcode_to_media_id(sc):
+    n = 0
+    for ch in sc:
+        i = _IG_ALPHA.find(ch)
+        if i < 0:
+            return None
+        n = n * 64 + i
+    return n
+
+def _ig_extract_from_media_obj(m):
+    if not m:
+        return None
+    video_url = ''
+    if m.get('video_versions'):
+        video_url = m['video_versions'][0].get('url') or ''
+    elif m.get('video_url'):
+        video_url = m['video_url']
+    thumb = ''
+    iv = m.get('image_versions2') or {}
+    if iv.get('candidates'):
+        thumb = iv['candidates'][0].get('url') or ''
+    elif m.get('display_url'):
+        thumb = m['display_url']
+    elif m.get('thumbnail_url'):
+        thumb = m['thumbnail_url']
+    is_video = bool(video_url) or bool(m.get('is_video'))
+    user = (m.get('user') or {}).get('username') \
+           or (m.get('owner') or {}).get('username') or ''
+    caption_obj = m.get('caption')
+    if caption_obj is None and m.get('edge_media_to_caption'):
+        edges = m['edge_media_to_caption'].get('edges') or []
+        caption_obj = edges[0].get('node', {}) if edges else {}
+    caption = caption_obj.get('text', '') if isinstance(caption_obj, dict) else str(caption_obj or '')
+    title = (caption or 'Instagram Post').strip()[:120] or 'Instagram Post'
+    if not video_url and not thumb:
+        return None
+    return {'video_url': video_url, 'thumb_url': thumb, 'title': title,
+            'uploader': user, 'is_video': is_video}
+
+def _ig_web_api(shortcode):
+    """IG /api/v1/media/<id>/info/ — works for public posts from datacenter IPs."""
+    mid = _shortcode_to_media_id(shortcode)
+    if not mid:
+        return None, 'Could not encode shortcode.'
+    try:
+        try:
+            import cloudscraper
+            sess = cloudscraper.create_scraper(
+                browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+        except ImportError:
+            sess = req_lib.Session()
+        hdrs = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'X-IG-App-ID': _IG_APP_ID,
+            'X-ASBD-ID': _IG_ASBD_ID,
+            'X-IG-WWW-Claim': '0',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Origin':  'https://www.instagram.com',
+            'Referer': f'https://www.instagram.com/p/{shortcode}/',
+        }
+        r = sess.get(f'https://www.instagram.com/api/v1/media/{mid}/info/',
+                     headers=hdrs, timeout=20)
+        if r.status_code != 200:
+            return None, f'IG web v1 HTTP {r.status_code}'
+        try:
+            d = r.json()
+        except Exception:
+            return None, 'IG web v1: non-JSON (login wall)'
+        items = d.get('items') or []
+        if not items:
+            return None, 'IG web v1: no items'
+        info = _ig_extract_from_media_obj(items[0])
+        if not info:
+            return None, 'IG web v1: could not extract media'
+        return info, None
+    except Exception as e:
+        return None, f'IG web v1 error: {e}'
+
+def _ig_graphql(shortcode):
+    """IG public GraphQL — fallback when web v1 is rate-limited."""
+    try:
+        sess = req_lib.Session()
+        hdrs = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+            'Accept': '*/*',
+            'X-IG-App-ID': _IG_APP_ID,
+            'X-Requested-With': 'XMLHttpRequest',
+            'Origin':  'https://www.instagram.com',
+            'Referer': f'https://www.instagram.com/p/{shortcode}/',
+        }
+        r = sess.get(
+            'https://www.instagram.com/graphql/query/',
+            params={'doc_id': '8845758582119845',
+                    'variables': '{"shortcode":"%s"}' % shortcode},
+            headers=hdrs, timeout=20)
+        if r.status_code != 200:
+            return None, f'IG graphql HTTP {r.status_code}'
+        try:
+            d = r.json()
+        except Exception:
+            return None, 'IG graphql: non-JSON'
+        m = (d.get('data') or {}).get('xdt_shortcode_media') \
+            or (d.get('data') or {}).get('shortcode_media')
+        info = _ig_extract_from_media_obj(m)
+        if not info:
+            return None, 'IG graphql: no media'
+        return info, None
+    except Exception as e:
+        return None, f'IG graphql error: {e}'
+
+def _snapinsta_fetch(url):
+    """snapinsta.to via curl_cffi chrome124 TLS fingerprint."""
+    try:
+        from curl_cffi import requests as cf_req
+    except ImportError:
+        return None, 'curl_cffi not installed'
+    try:
+        sess = cf_req.Session(impersonate='chrome124')
+        r = sess.get('https://snapinsta.to/en2', timeout=20)
+        if r.status_code != 200:
+            return None, f'snapinsta home HTTP {r.status_code}'
+        r = sess.post('https://snapinsta.to/api/userverify',
+                      data={'url': url},
+                      headers={'X-Requested-With': 'XMLHttpRequest',
+                               'Origin': 'https://snapinsta.to',
+                               'Referer': 'https://snapinsta.to/en2',
+                               'Accept': 'application/json, text/plain, */*'}, timeout=20)
+        if r.status_code != 200:
+            return None, f'snapinsta verify HTTP {r.status_code}'
+        try:
+            token = (r.json() or {}).get('token')
+        except Exception:
+            return None, 'snapinsta verify: non-JSON'
+        if not token:
+            return None, 'snapinsta verify: no token'
+        r2 = sess.post('https://snapinsta.to/api/ajaxSearch',
+                       data={'q': url, 't': 'media', 'v': '7', 'lang': 'en',
+                             'cftoken': token, 'html': ''},
+                       headers={'X-Requested-With': 'XMLHttpRequest',
+                                'Origin': 'https://snapinsta.to',
+                                'Referer': 'https://snapinsta.to/en2',
+                                'Accept': '*/*'}, timeout=30)
+        if r2.status_code != 200:
+            return None, f'snapinsta search HTTP {r2.status_code}'
+        try:
+            body = r2.json()
+        except Exception:
+            return None, 'snapinsta search: non-JSON'
+        if body.get('status') != 'ok':
+            return None, body.get('mess', 'snapinsta error')
+        html = body.get('data') or ''
+        if not html:
+            return None, body.get('mess') or 'snapinsta: empty data'
+        parsed = _parse_snapsave_html(html)
+        if not parsed:
+            return None, 'snapinsta: could not parse download HTML'
+        return parsed, None
+    except Exception as e:
+        return None, f'snapinsta error: {e}'
+
+
 def _instaloader_fetch(shortcode):
-    """Last-resort backend: scrape via the Instaloader library.
-    Works for fully-public posts even when snapsave is dead and yt-dlp is
-    bot-blocked. Won't work for private/age-gated posts (no cookies)."""
+    """Last-resort: Instaloader library — public posts, no cookies."""
     try:
         import instaloader
     except ImportError:
@@ -313,20 +481,36 @@ def _instaloader_fetch(shortcode):
 
 
 def ig_scrape(shortcode):
-    url = f'https://www.instagram.com/p/{shortcode}/'
-    data, err1 = _snapsave_fetch(url)
-    if data:
-        return data, None
-    data, err2 = _ytdlp_fetch(url)
-    if data:
-        return data, None
-    data, err3 = _instaloader_fetch(shortcode)
-    if data:
-        return data, None
-    # All 3 backends failed. Don't leak internal jargon; tell the user
-    # what to actually do.
+    """5-backend cascade (ported from reclip). First success wins.
+    Order chosen for: speed, reliability, and likelihood-of-working from
+    Railway's datacenter IP."""
+    canon_p    = f'https://www.instagram.com/p/{shortcode}/'
+    canon_reel = f'https://www.instagram.com/reel/{shortcode}/'
+    errors = []
+    for name, fn in [
+        ('ig_web_api',  lambda: _ig_web_api(shortcode)),
+        ('ig_graphql',  lambda: _ig_graphql(shortcode)),
+        ('snapinsta',   lambda: _snapinsta_fetch(canon_reel) if _snapinsta_fetch(canon_reel)[0] else _snapinsta_fetch(canon_p)),
+        ('snapsave',    lambda: _snapsave_fetch(canon_p)),
+        ('yt-dlp',      lambda: _ytdlp_fetch(canon_p)),
+        ('instaloader', lambda: _instaloader_fetch(shortcode)),
+    ]:
+        try:
+            data, err = fn()
+        except Exception as e:
+            data, err = None, f'{name} crashed: {e}'
+        if data and (data.get('video_url') or data.get('thumb_url')):
+            return data, None
+        if err:
+            errors.append(f'{name}: {err}')
+            print(f'[ig_scrape] {name} failed: {err}', flush=True)
+    print(f'[ig_scrape] ALL backends failed: {" | ".join(errors)}', flush=True)
+    # If any backend complained the post is private/locked, surface that.
+    joined = ' '.join(errors).lower()
+    if 'private' in joined or 'login' in joined or 'rate-limit' in joined:
+        return None, ('This post appears to be private, age-gated, or login-required. '
+                      'We can only download fully public Instagram posts.')
     return None, ('Instagram is currently blocking automated downloads for this post. '
-                  'It may be private, age-gated, or temporarily geofenced. '
                   'Try the Instagram app\'s share menu instead.')
 
 

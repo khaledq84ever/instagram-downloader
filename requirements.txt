@@ -5,3 +5,4 @@ static-ffmpeg
 requests
 cloudscraper
 instaloader==4.13.1
+curl_cffi==0.7.4
