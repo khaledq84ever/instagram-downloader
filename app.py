@@ -228,7 +228,7 @@ def _snapsave_fetch(url):
             import cloudscraper
             sess = cloudscraper.create_scraper(
                 browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
-        except ImportError:
+        except Exception:  # cloudscraper can crash on pyOpenSSL/cryptography skew — fall back to plain requests
             sess = req_lib.Session()
             sess.headers.update({'User-Agent':
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -340,7 +340,7 @@ def _ig_web_api(shortcode):
             import cloudscraper
             sess = cloudscraper.create_scraper(
                 browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
-        except ImportError:
+        except Exception:  # cloudscraper can crash on pyOpenSSL/cryptography skew — fall back to plain requests
             sess = req_lib.Session()
         hdrs = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
@@ -446,7 +446,10 @@ def _snapinsta_fetch(url):
         html = body.get('data') or ''
         if not html:
             return None, body.get('mess') or 'snapinsta: empty data'
-        parsed = _parse_snapsave_html(html)
+        # snapinsta returns the SAME obfuscated packer as snapsave; decode it
+        # first — the raw packer has no <a>/<img> tags for the parser to find.
+        decoded = _snapsave_decode(html) or html
+        parsed = _parse_snapsave_html(decoded)
         if not parsed:
             return None, 'snapinsta: could not parse download HTML'
         return parsed, None
@@ -487,11 +490,23 @@ def ig_scrape(shortcode):
     canon_p    = f'https://www.instagram.com/p/{shortcode}/'
     canon_reel = f'https://www.instagram.com/reel/{shortcode}/'
     errors = []
+
+    def _snapinsta_either():
+        # Try the reel URL first, then the /p/ form — one call each, no re-fetch.
+        data, _ = _snapinsta_fetch(canon_reel)
+        if data:
+            return data, None
+        return _snapinsta_fetch(canon_p)
+
+    # Order = what actually works from Railway's datacenter IP first. ig_graphql
+    # is the proven primary; snapinsta is the working web-converter "direct grab"
+    # (decodes the snapsave-style packer). ig_web_api now mostly 401s (IG locked
+    # /api/v1/.../info/) so it sits below the converters and fails fast.
     for name, fn in [
-        ('ig_web_api',  lambda: _ig_web_api(shortcode)),
         ('ig_graphql',  lambda: _ig_graphql(shortcode)),
-        ('snapinsta',   lambda: _snapinsta_fetch(canon_reel) if _snapinsta_fetch(canon_reel)[0] else _snapinsta_fetch(canon_p)),
+        ('snapinsta',   _snapinsta_either),
         ('snapsave',    lambda: _snapsave_fetch(canon_p)),
+        ('ig_web_api',  lambda: _ig_web_api(shortcode)),
         ('yt-dlp',      lambda: _ytdlp_fetch(canon_p)),
         ('instaloader', lambda: _instaloader_fetch(shortcode)),
     ]:
