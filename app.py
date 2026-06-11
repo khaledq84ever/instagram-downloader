@@ -327,8 +327,12 @@ def _ig_extract_from_media_obj(m):
     title = (caption or 'Instagram Post').strip()[:120] or 'Instagram Post'
     if not video_url and not thumb:
         return None
+    try:
+        duration = float(m.get('video_duration') or 0)
+    except (TypeError, ValueError):
+        duration = 0
     return {'video_url': video_url, 'thumb_url': thumb, 'title': title,
-            'uploader': user, 'is_video': is_video}
+            'uploader': user, 'is_video': is_video, 'duration': duration}
 
 def _ig_web_api(shortcode):
     """IG /api/v1/media/<id>/info/ — works for public posts from datacenter IPs."""
@@ -693,13 +697,14 @@ def get_info():
     post, err = ig_scrape(sc)
     if err or not post:
         return jsonify({'error': err or 'Could not fetch post.'}), 400
+    dur = post.get('duration') or 0
     return jsonify({
         'title':        post['title'],
         'thumbnail':    post['thumb_url'],
         'uploader':     post['uploader'],
         'is_video':     post['is_video'],
-        'duration':     '—',
-        'duration_sec': 0,
+        'duration':     f'{int(dur // 60)}:{int(dur % 60):02d}' if dur else '—',
+        'duration_sec': dur,
         'url':          url,
     })
 
